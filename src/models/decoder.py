@@ -1,23 +1,19 @@
-"""Decoder utilities for NeuralFactors-style Student-t observation model.
+"""Decoder for Student-T observation model p(r|z).
+
+Linear factor model: r ~ Student-T(alpha + B^T z, sigma, nu)
 
 Provides:
-- log_pdf_r_given_z / log_pdf_multiple_z: vectorized stable Student-t logpdf per-asset and joint sums
-- sample_r_given_z: conditional sampling given z
-- marginal_mean: alpha + B @ mu_z
-- marginal_cov_actionable: compute portfolio variance without building full NxN
+- log_pdf_r_given_z: Compute log p(r|z)
+- sample_r_given_z: Sample r|z
+- marginal_mean: E[r] = alpha + B @ mu_z
+- marginal_covariance: Cov[r] = diag(sigma^2) + B Sigma_z B^T
+- marginal_cov_actionable: Portfolio variance w^T Cov[r] w
 
-Conventions:
-- alpha: (N,) or (batch,N)
-- B: (N,F) or (batch,N,F)
-- sigma, nu: (N,) or (batch,N)
-- z: (F,) or (K,F) or (batch,F) or (batch,K,F)
-- r: (N,) or (batch,N)
-- mask: bool of same shape as alpha/r
-
-This module canonicalizes inputs to (batch, N, F) and (batch, K, F) forms internally.
+USED IN BOTH TRAINING AND INFERENCE.
 """
 
 from typing import Optional, Tuple
+import math
 
 import torch
 
@@ -55,21 +51,24 @@ def _canonicalize_z(z: torch.Tensor) -> Tuple[torch.Tensor, int]:
 	"""Return z in shape (batch, K, F) and K value.
 
 	Accepts:
-	- (F,) -> (1,1,F)
-	- (K,F) -> (1,K,F)
-	- (batch,F) -> (batch,1,F)
-	- (batch,K,F) -> (batch,K,F)
+	- (F,) -> (1,1,F) for single sample of single batch
+	- (batch,K,F) -> (batch,K,F) explicit shape (PREFERRED)
+	
+	REJECTS (K,F) and (batch,F) as ambiguous - use explicit 3D shape.
 	"""
 	if z.dim() == 1:
+		# Single latent vector -> single sample, single batch
 		z = z.unsqueeze(0).unsqueeze(0)
 	elif z.dim() == 2:
-		# could be (K,F) or (batch,F) ambiguous; treat as (K,F) -> batch=1
-		K, F = z.shape
-		z = z.unsqueeze(0)
+		# AMBIGUOUS: could be (K,F) samples or (batch,F) batches
+		raise ValueError(
+			f"z shape {tuple(z.shape)} is ambiguous (could be K samples or batch). "
+			f"Use explicit 3D shape (batch,K,F) or 1D (F,) for single sample."
+		)
 	elif z.dim() == 3:
 		pass
 	else:
-		raise ValueError(f"Unsupported z shape: {tuple(z.shape)}")
+		raise ValueError(f"z must be 1D (F,) or 3D (batch,K,F), got {z.dim()}D: {tuple(z.shape)}")
 	batch, K, F = z.shape
 	return z, K
 
@@ -158,10 +157,11 @@ def log_pdf_r_given_z(
 	q = 1.0 + (t * t) / nu_exp
 	logq = torch.log1p((t * t) / nu_exp)
 
-	# logpdf formula
+	# Student-T log-pdf formula
 	lgamma = torch.lgamma
 	log_term = lgamma((nu_exp + 1.0) / 2.0) - lgamma(nu_exp / 2.0)
-	const_term = -0.5 * torch.log(nu_exp * torch.tensor(torch.pi, dtype=target_dtype, device=device))
+	log_pi = math.log(math.pi)
+	const_term = -0.5 * (torch.log(nu_exp) + log_pi)
 	log_sigma = -torch.log(sigma_exp)
 	power = -((nu_exp + 1.0) / 2.0) * logq
 
@@ -239,10 +239,11 @@ def sample_r_given_z(
 			# (K,batch,N) -> permute
 			u = u.permute(1, 2, 0)
 		else:
-			# fallback
+			# Fallback: manual Student-T sampling
+			# T = N(0,1) / sqrt(V / nu) where V ~ Gamma(nu/2, 1/2)
 			g = torch.randn((batch, B.shape[1], K), device=device)
-			v = torch.distributions.Gamma(nu.unsqueeze(-1) / 2.0, 1.0).sample((K,)).permute(1, 2, 0)
-			u = g / torch.sqrt(v / nu.unsqueeze(-1))
+			v = torch.distributions.Gamma(nu.unsqueeze(-1) / 2.0, 0.5).sample((K,)).permute(1, 2, 0)
+			u = g / torch.sqrt(2.0 * v / nu.unsqueeze(-1))
 	elif reparam_mode == "normal_approx":
 		var_factor = (nu / (nu - 2.0)).unsqueeze(-1)
 		sigma_eff = sigma.unsqueeze(-1) * torch.sqrt(var_factor)
@@ -282,11 +283,45 @@ def marginal_mean(alpha: torch.Tensor, B: torch.Tensor, mu_z: Optional[torch.Ten
 	return mu
 
 
-def marginal_cov_actionable(B: torch.Tensor, Sigma_z: torch.Tensor, sigma: torch.Tensor, w: Optional[torch.Tensor] = None):
-	"""Compute covariance action.
+def marginal_covariance(B: torch.Tensor, Sigma_z: torch.Tensor, sigma: torch.Tensor) -> torch.Tensor:
+	"""Compute full marginal covariance: Cov[r] = diag(sigma^2) + B Sigma_z B^T.
+	
+	Args:
+		B: Factor exposures (N,F) or (batch,N,F)
+		Sigma_z: Prior covariance (F,F) or (batch,F,F)
+		sigma: Idiosyncratic scale (N,) or (batch,N)
+		
+	Returns:
+		Cov[r]: (batch,N,N) covariance matrix
+	"""
+	if B.dim() == 2:
+		B = B.unsqueeze(0)
+	batch, N, F = B.shape
+	device = B.device
+	
+	if Sigma_z.dim() == 2:
+		Sigma_z = Sigma_z.unsqueeze(0).expand(batch, -1, -1)
+	if sigma.dim() == 1:
+		sigma = sigma.unsqueeze(0)
+	
+	# Compute B Sigma_z B^T efficiently
+	B_Sigma = torch.matmul(B, Sigma_z)  # (batch, N, F)
+	factor_cov = torch.matmul(B_Sigma, B.transpose(-2, -1))  # (batch, N, N)
+	
+	# Add idiosyncratic variance on diagonal
+	idio_var = sigma * sigma  # (batch, N)
+	diag_idx = torch.arange(N, device=device)
+	factor_cov[..., diag_idx, diag_idx] = factor_cov[..., diag_idx, diag_idx] + idio_var
+	
+	return factor_cov
 
-	If `w` provided (shape (N,) or (batch,N)) compute portfolio variance w^T Cov_r w without forming full NxN.
-	Otherwise return low-rank factors (B, Sigma_z, sigma) that can be used to reconstruct or compute matvecs.
+
+def marginal_cov_actionable(B: torch.Tensor, Sigma_z: torch.Tensor, sigma: torch.Tensor, w: Optional[torch.Tensor] = None):
+	"""Compute portfolio variance w^T Cov[r] w without forming full NxN.
+
+	If `w` provided: returns portfolio variance.
+	If `w` is None: returns low-rank factors (B, Sigma_z, sigma) for later use.
+	
 	Cov[r] = diag(sigma^2) + B Sigma_z B^T
 	"""
 	if B.dim() == 2:
@@ -314,6 +349,7 @@ __all__ = [
 	"log_pdf_multiple_z",
 	"sample_r_given_z",
 	"marginal_mean",
+	"marginal_covariance",
 	"marginal_cov_actionable",
 ]
 

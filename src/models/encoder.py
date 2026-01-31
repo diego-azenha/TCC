@@ -1,26 +1,14 @@
 import torch
 from typing import Optional, Tuple
 
-"""Analytical encoder that computes q(z|r,F) ≈ N(mu_q, Sigma_q).
+"""Analytical encoder for q(z|r,F) ≈ N(mu_q, Sigma_q).
 
-Parameters
-- alpha: (N,) or (batch,N)
-- B: (N,F) or (batch,N,F)
-- sigma: (N,) or (batch,N)  -- interpreted as std/scale
-- r: (N,) or (batch,N)
-- mask: optional boolean tensor same shape as alpha/r (True=valid)
-- mu_z: (F,) or (batch,F) prior mean (defaults to zeros)
-- Sigma_z: (F,F) or (batch,F,F) prior covariance (defaults to I)
-- eps: small epsilon for inv_sigma
-- jitter_init, jitter_max: cholesky jitter loop parameters
-- use_fp64: do LA in float64 for stability
-- return_full_cov: if True also return full Sigma_q and prec
+Computes posterior using closed-form solution (Section 3.3, Eq 8).
+Student-T prior converted to Normal via moment matching before applying formula.
 
-Returns (mu_q, L_q, Sigma_q_opt, prec_opt)
-- mu_q: (batch,F)
-- L_q: (batch,F,F) lower-triangular cholesky of Sigma_q
-- Sigma_q_opt: (batch,F,F) if return_full_cov else None
-- prec_opt: (batch,F,F) precision (Sigma_q^{-1}) if return_full_cov else None
+TRAINING ONLY: Not used during inference.
+
+Returns: (mu_q, L_q, Sigma_q, prec) where L_q is Cholesky of Sigma_q
 """
 
 def encoder_recon(
@@ -31,40 +19,50 @@ def encoder_recon(
 	mask: Optional[torch.Tensor] = None,
 	mu_z: Optional[torch.Tensor] = None,
 	Sigma_z: Optional[torch.Tensor] = None,
+	nu_z: Optional[torch.Tensor] = None,
 	eps: float = 1e-8,
 	jitter_init: float = 1e-6,
 	jitter_max: float = 1e-1,
+	jitter_multiplier: float = 2.0,
 	use_fp64: bool = False,
 	return_full_cov: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+	"""Compute q(z|r) posterior analytically.
+	
+	Args:
+		nu_z: If provided, applies Student-T to Normal moment matching
+		jitter_multiplier: Jitter increase factor (default 2.0, paper uses adaptive)
+	"""
 
-	# --- helper: make tensors and batch dims consistent ---
 	device = B.device
-	# promote 1D -> batch dim
-	def _promote_batch(x: Optional[torch.Tensor], expected_ndim: int):
+	target_dtype = torch.float64 if use_fp64 else torch.get_default_dtype()
+	
+	def _ensure_batch(x: Optional[torch.Tensor], expected_ndim: int):
+		"""Ensure tensor has batch dimension without double-unsqueezing."""
 		if x is None:
 			return None
+		if x.dim() < expected_ndim - 1:
+			raise ValueError(f"Tensor has too few dimensions: {x.dim()} < {expected_ndim - 1}")
 		if x.dim() == expected_ndim - 1:
 			return x.unsqueeze(0)
 		return x
 
-	# Ensure minimal dtypes
-	target_dtype = torch.float64 if use_fp64 else torch.get_default_dtype()
-
-	alpha = _promote_batch(alpha, 2)
-	sigma = _promote_batch(sigma, 2)
-	r = _promote_batch(r, 2)
-	if mask is not None:
-		mask = _promote_batch(mask, 2)
-
-	# B may be (N,F) or (batch,N,F)
+	# Process B first to get dimensions
 	if B.dim() == 2:
 		B = B.unsqueeze(0)
-
-	# Now shapes: (batch, N, F), (batch, N)
+	elif B.dim() != 3:
+		raise ValueError(f"B must be (N,F) or (batch,N,F), got {B.dim()} dims")
+	
 	batch_size, N, F = B.shape
 
-	# cast
+	# Ensure batch dims (no double-unsqueeze)
+	alpha = _ensure_batch(alpha, 2)
+	sigma = _ensure_batch(sigma, 2)
+	r = _ensure_batch(r, 2)
+	if mask is not None:
+		mask = _ensure_batch(mask, 2)
+
+	# Cast to target dtype
 	alpha = alpha.to(device=device, dtype=target_dtype)
 	B = B.to(device=device, dtype=target_dtype)
 	sigma = sigma.to(device=device, dtype=target_dtype)
@@ -74,17 +72,6 @@ def encoder_recon(
 	else:
 		mask = mask.to(device=device)
 
-	# Broadcast mask/sigma/alpha/r to (batch,N)
-	if alpha.dim() == 1:
-		alpha = alpha.unsqueeze(0)
-	if sigma.dim() == 1:
-		sigma = sigma.unsqueeze(0)
-	if r.dim() == 1:
-		r = r.unsqueeze(0)
-	if mask.dim() == 1:
-		mask = mask.unsqueeze(0)
-
-	# clamp sigma to avoid division by zero
 	sigma = torch.clamp(sigma, min=1e-6)
 
 	# inv_sigma with masking by zeroing contributions of invalid assets
@@ -100,95 +87,96 @@ def encoder_recon(
 	weighted_resid = inv_sigma * resid
 	v = torch.matmul(B.transpose(-2, -1), weighted_resid.unsqueeze(-1)).squeeze(-1)  # (batch,F)
 
-	# Prior mu_z, Sigma_z handling and inversion via solve
+	# Prior mu_z, Sigma_z handling
 	if mu_z is None:
 		mu_z = torch.zeros((batch_size, F), dtype=target_dtype, device=device)
 	else:
-		mu_z = _promote_batch(mu_z, 2).to(device=device, dtype=target_dtype)
-		if mu_z.dim() == 1:
-			mu_z = mu_z.unsqueeze(0)
+		mu_z = _ensure_batch(mu_z, 2).to(device=device, dtype=target_dtype)
 
 	if Sigma_z is None:
 		Sigma_z = torch.eye(F, dtype=target_dtype, device=device).expand(batch_size, F, F).contiguous()
 	else:
-		# allow (F,F) or (batch,F,F)
 		if Sigma_z.dim() == 2:
 			Sigma_z = Sigma_z.unsqueeze(0).expand(batch_size, F, F).contiguous()
 		else:
 			Sigma_z = Sigma_z.to(device=device, dtype=target_dtype)
+	
+	# Student-T to Normal moment matching (Section 3.3)
+	# For Student-T with df=nu: variance = sigma^2 * nu/(nu-2)
+	if nu_z is not None:
+		if isinstance(nu_z, (int, float)):
+			nu_z = torch.tensor(nu_z, dtype=target_dtype, device=device)
+		else:
+			nu_z = nu_z.to(device=device, dtype=target_dtype)
+		
+		if torch.any(nu_z <= 2.0):
+			raise ValueError(f"nu_z must be > 2 for finite variance, got min={nu_z.min().item()}")
+		
+		# Apply variance scaling
+		variance_scale = nu_z / (nu_z - 2.0)
+		if Sigma_z.dim() == 3:
+			Sigma_z = Sigma_z * variance_scale.view(-1, 1, 1)
+		else:
+			Sigma_z = Sigma_z * variance_scale
 
-	# Compute Sigma_z^{-1} via solve for numerical stability
+	# Precision matrix
 	I_F = torch.eye(F, dtype=target_dtype, device=device).expand(batch_size, F, F).contiguous()
-	# torch.linalg.solve supports batched input
 	Sigma_z_inv = torch.linalg.solve(Sigma_z, I_F)
+	posterior_prec = Sigma_z_inv + W
+	posterior_prec = 0.5 * (posterior_prec + posterior_prec.transpose(-2, -1))  # Symmetrize once
 
-	# precision and cholesky with jitter adaptive
-	prec = Sigma_z_inv + W
-
-	# ensure symmetry
-	prec = 0.5 * (prec + prec.transpose(-2, -1))
-
+	# Cholesky with adaptive jitter
 	jitter = torch.tensor(jitter_init, dtype=target_dtype, device=device)
 	L = None
-	info = None
-	# loop with increasing jitter until cholesky succeeds or jitter exceeds max
 	while True:
 		try:
-			# add jitter to diagonal
-			prec_j = prec.clone()
+			prec_jittered = posterior_prec.clone()
 			diag_idx = torch.arange(F, device=device)
-			prec_j[..., diag_idx, diag_idx] = prec_j[..., diag_idx, diag_idx] + jitter
-			# try cholesky
-			L_try, info = torch.linalg.cholesky_ex(prec_j)
-			# info is 0 for success per-batch
+			prec_jittered[..., diag_idx, diag_idx] = prec_jittered[..., diag_idx, diag_idx] + jitter
+			L_try, info = torch.linalg.cholesky_ex(prec_jittered)
 			if isinstance(info, torch.Tensor):
 				if (info == 0).all():
 					L = L_try
 					break
 			else:
-				# info scalar
 				if info == 0:
 					L = L_try
 					break
-			# otherwise increase jitter
-			jitter = jitter * 10.0
+			jitter = jitter * jitter_multiplier
 			if jitter.item() > jitter_max:
-				raise RuntimeError(f"Cholesky failed for precision even after jitter up to {jitter.item()}")
-		except RuntimeError:
-			jitter = jitter * 10.0
+				raise RuntimeError(f"Cholesky failed with jitter up to {jitter.item()}")
+		except RuntimeError as e:
+			if "Cholesky" not in str(e):
+				raise
+			jitter = jitter * jitter_multiplier
 			if jitter.item() > jitter_max:
 				raise
 
-	# compute mu_q without inverting: solve prec @ mu_q = (Sigma_z^{-1} @ mu_z + v)
-	b_term = torch.matmul(Sigma_z_inv, mu_z.unsqueeze(-1)).squeeze(-1) + v  # (batch,F)
-	# use cholesky_solve to compute mu_q = prec^{-1} @ b_term
+	# Compute posterior mean and covariance
+	b_term = torch.matmul(Sigma_z_inv, mu_z.unsqueeze(-1)).squeeze(-1) + v
 	mu_q = torch.cholesky_solve(b_term.unsqueeze(-1), L).squeeze(-1)
 
-	# compute Sigma_q optionally and its cholesky L_q
+	# Compute Sigma_q and its Cholesky
 	Sigma_q = torch.cholesky_solve(I_F, L) if return_full_cov or True else None
-	# ensure symmetry
 	if Sigma_q is not None:
-		Sigma_q = 0.5 * (Sigma_q + Sigma_q.transpose(-2, -1))
-	# compute L_q (cholesky of Sigma_q) — useful for reparam
-	# add tiny jitter to Sigma_q diagonal for safety
-	eps_diag = 1e-12
-	Sigma_q_j = Sigma_q.clone()
-	diag_idx = torch.arange(F, device=device)
-	Sigma_q_j[..., diag_idx, diag_idx] = Sigma_q_j[..., diag_idx, diag_idx] + eps_diag
-	L_q = torch.linalg.cholesky(Sigma_q_j)
+		eps_diag = 1e-12
+		Sigma_q_j = Sigma_q.clone()
+		diag_idx = torch.arange(F, device=device)
+		Sigma_q_j[..., diag_idx, diag_idx] = Sigma_q_j[..., diag_idx, diag_idx] + eps_diag
+		L_q = torch.linalg.cholesky(Sigma_q_j)
+	else:
+		L_q = None
 
-	# Return precision as well if requested
-	prec_out = prec
-
-	# Cast back to float32 if not using fp64 and original inputs were float32
-	if not use_fp64:
-		mu_q = mu_q.to(dtype=torch.get_default_dtype())
-		L_q = L_q.to(dtype=torch.get_default_dtype())
-		Sigma_q = Sigma_q.to(dtype=torch.get_default_dtype()) if Sigma_q is not None else None
-		prec_out = prec_out.to(dtype=torch.get_default_dtype())
+	# Cast back if needed (once at end)
+	if not use_fp64 and target_dtype != torch.get_default_dtype():
+		default_dtype = torch.get_default_dtype()
+		mu_q = mu_q.to(dtype=default_dtype)
+		L_q = L_q.to(dtype=default_dtype) if L_q is not None else None
+		Sigma_q = Sigma_q.to(dtype=default_dtype) if Sigma_q is not None else None
+		posterior_prec = posterior_prec.to(dtype=default_dtype)
 
 	if return_full_cov:
-		return mu_q, L_q, Sigma_q, prec_out
+		return mu_q, L_q, Sigma_q, posterior_prec
 	return mu_q, L_q, None, None
 
 

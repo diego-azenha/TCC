@@ -1,44 +1,57 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional
+from typing import Optional, Union
+from ..utils.config import ModelConfig
 
 
 class StockEmbedder(nn.Module):
-    """Stock Embedder
-
-    Inputs (per day, batch of assets):
-      - S: Tensor[N, L, d_ts]  (time-series window per asset)
-      - S_static: Tensor[N, d_static]  (static features per asset at time t)
-
-    Outputs:
-      - alpha: Tensor[N]
-      - beta: Tensor[N, F]
-      - sigma: Tensor[N] (positive)
-      - nu: Tensor[N] (greater than offset, default +4)
-
-    Implementation follows the specified pipeline:
-      1) per-timestep projection d_ts -> h
-      2) TransformerEncoder over time (batch_first=True)
-      3) concat last temporal state with static features
-      4) MLP head -> intermediate H3
-      5) linear heads + softplus offsets for stability
+    """Outputs stock-specific parameters (alpha, beta, sigma, nu) from features.
+    
+    Input: S[N,L,d_ts] (time-series), S_static[N,d_static] (static features)
+    Output: alpha[N], beta[N,F], sigma[N], nu[N]
+    
+    Note: N stocks from ONE day (not batched over days). Paper defaults: F=64, h=256, L=256.
     """
 
     def __init__(
         self,
-        d_ts: int,
-        d_static: int,
-        h: int = 64,
-        F: int = 8,
+        d_ts: int = None,
+        d_static: int = None,
+        h: int = 256,  # Paper uses 256 (Section 3.5)
+        F: int = 64,  # Paper uses 64 factors (Table 3)
         nhead: int = 4,
         num_layers: int = 2,
         activation: str = "gelu",
-        dropout: float = 0.1,
+        dropout: float = 0.25,  # Paper uses 0.25 (Section 3.5)
         sigma_eps: float = 1e-6,
         nu_offset: float = 4.0,
+        lookback: int = 256,  # Paper uses 256 (Table 3, Section 5.1.4)
+        config: Optional[ModelConfig] = None,
     ):
+        """Args: d_ts, d_static (required); h=256, F=64, dropout=0.25, lookback=256; config overrides all."""
         super().__init__()
+        
+        # If config provided, use its values
+        if config is not None:
+            d_ts = config.d_ts
+            d_static = config.d_static
+            h = config.hidden_size
+            F = config.num_factors
+            nhead = config.nhead
+            num_layers = config.num_layers
+            activation = config.activation
+            dropout = config.dropout
+            sigma_eps = config.sigma_eps
+            nu_offset = config.nu_offset
+            lookback = config.lookback
+        
+        # Validate required parameters
+        if d_ts is None:
+            raise ValueError("d_ts must be specified (either directly or via config)")
+        if d_static is None:
+            raise ValueError("d_static must be specified (either directly or via config)")
+        
         self.d_ts = d_ts
         self.d_static = d_static
         self.h = h
@@ -46,6 +59,7 @@ class StockEmbedder(nn.Module):
         self.activation = activation
         self.sigma_eps = sigma_eps
         self.nu_offset = nu_offset
+        self.lookback = lookback  # Store for validation
 
         # Step 1: per-timestep projection
         self.proj = nn.Linear(d_ts, h)
@@ -68,43 +82,42 @@ class StockEmbedder(nn.Module):
         self.nu_head = nn.Linear(h, 1)
 
     def _act(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply activation function."""
         if self.activation == "gelu":
             return F.gelu(x)
         if self.activation == "relu":
             return F.relu(x)
         if self.activation == "silu":
             return F.silu(x)
-        return F.gelu(x)
+        raise ValueError(f"Unknown activation function: {self.activation}. Must be 'gelu', 'relu', or 'silu'.")
 
     def forward(self, S: torch.Tensor, S_static: torch.Tensor):
-        """
-        Forward pass.
-
-        Args:
-            S: Tensor[N, L, d_ts]
-            S_static: Tensor[N, d_static]
-
-        Returns:
-            alpha: Tensor[N]
-            beta: Tensor[N, F]
-            sigma: Tensor[N]
-            nu: Tensor[N]
-        """
+        """S[N,L,d_ts], S_static[N,d_static] -> alpha[N], beta[N,F], sigma[N], nu[N]"""
         if S.dim() != 3:
-            raise ValueError(f"S must be shape (N,L,d_ts), got {tuple(S.shape)}")
-        if S_static.dim() not in (1, 2):
-            raise ValueError(f"S_static must be shape (N,d_static) or (N,), got {tuple(S_static.shape)}")
-
+            raise ValueError(f"S must be (N,L,d_ts), got {tuple(S.shape)}")
+        
         N, L, d_ts = S.shape
+        
         if d_ts != self.d_ts:
-            raise ValueError(f"d_ts mismatch: module d_ts={self.d_ts}, input d_ts={d_ts}")
-
+            raise ValueError(f"d_ts mismatch: expected {self.d_ts}, got {d_ts}")
+        
+        if L != self.lookback:
+            raise ValueError(f"Lookback mismatch: expected {self.lookback}, got {L}")
+        
         device = S.device
-        S_static = S_static.to(device)
+        
         if S_static.dim() == 1:
             S_static = S_static.unsqueeze(-1)
+        elif S_static.dim() == 2:
+            if S_static.shape[-1] != self.d_static:
+                raise ValueError(f"d_static mismatch: expected {self.d_static}, got {S_static.shape[-1]}")
+        else:
+            raise ValueError(f"S_static must be (N,d_static) or (N,), got {tuple(S_static.shape)}")
+        
+        S_static = S_static.to(device)
+        
         if S_static.shape[0] != N:
-            raise ValueError("Batch size mismatch between S and S_static")
+            raise ValueError(f"Stock count mismatch: S has {N}, S_static has {S_static.shape[0]}")
 
         # Step 1: per-timestep projection (applied to last dim)
         M = self.proj(S)  # (N, L, h)
