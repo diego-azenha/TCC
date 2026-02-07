@@ -182,7 +182,10 @@ class NeuralFactorsDataset(Dataset):
             
             # Get last lookback rows
             ts_window = ts_history.iloc[-self.lookback:]
-            S[i] = torch.tensor(ts_window[self.ts_feature_cols].values, dtype=torch.float32)
+            
+            # Fill NaN with 0 (safe for normalized features)
+            ts_values = ts_window[self.ts_feature_cols].fillna(0).values
+            S[i] = torch.tensor(ts_values, dtype=torch.float32)
             
             # Get static features for this date
             static_features = self.df_static_full[
@@ -191,8 +194,10 @@ class NeuralFactorsDataset(Dataset):
             ]
             
             if len(static_features) > 0:
+                # Fill NaN with 0 for static features too
+                static_values = static_features[self.static_feature_cols].fillna(0).values[0]
                 S_static[i] = torch.tensor(
-                    static_features[self.static_feature_cols].values[0],
+                    static_values,
                     dtype=torch.float32
                 )
                 mask[i] = True  # Valid stock
@@ -203,33 +208,24 @@ class NeuralFactorsDataset(Dataset):
 def collate_fn(batch: List[Tuple]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Collate function for DataLoader.
     
-    Paper uses batch_size=1 per date. We flatten batch and stock dimensions
-    so that N = batch_size * num_stocks_per_date.
+    Paper uses batch_size=1 per date, where each batch contains all stocks from a single day.
+    We keep batch and stock dimensions separate: [batch, N, L, d_ts]
     
     Args:
         batch: List of (S, S_static, r, mask) tuples
         
     Returns:
-        Flattened tensors: S [N, L, d_ts], S_static [N, d_static], r [N], mask [N]
-        where N = sum of stocks across all dates in batch
+        Stacked tensors: S [batch, N, L, d_ts], S_static [batch, N, d_static], 
+                        r [batch, N], mask [batch, N]
+        where batch is typically 1 (one trading day) and N is number of stocks that day
     """
     S_list, S_static_list, r_list, mask_list = zip(*batch)
     
-    # Stack along batch dimension then flatten batch and stock dimensions
-    S = torch.stack(S_list, dim=0)  # [batch, N_per_date, L, d_ts]
-    S_static = torch.stack(S_static_list, dim=0)  # [batch, N_per_date, d_static]
-    r = torch.stack(r_list, dim=0)  # [batch, N_per_date]
-    mask = torch.stack(mask_list, dim=0)  # [batch, N_per_date]
-    
-    # Flatten batch and stock dimensions: [batch, N_per_date, ...] -> [batch*N_per_date, ...]
-    batch_size = S.shape[0]
-    N_per_date = S.shape[1]
-    N_total = batch_size * N_per_date
-    
-    S = S.view(N_total, *S.shape[2:])  # [N_total, L, d_ts]
-    S_static = S_static.view(N_total, *S_static.shape[2:])  # [N_total, d_static]
-    r = r.view(N_total)  # [N_total]
-    mask = mask.view(N_total)  # [N_total]
+    # Stack along batch dimension, keeping stock dimension separate
+    S = torch.stack(S_list, dim=0)  # [batch, N, L, d_ts]
+    S_static = torch.stack(S_static_list, dim=0)  # [batch, N, d_static]
+    r = torch.stack(r_list, dim=0)  # [batch, N]
+    mask = torch.stack(mask_list, dim=0)  # [batch, N]
     
     return S, S_static, r, mask
 

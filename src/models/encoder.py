@@ -67,6 +67,8 @@ def encoder_recon(
 	B = B.to(device=device, dtype=target_dtype)
 	sigma = sigma.to(device=device, dtype=target_dtype)
 	r = r.to(device=device, dtype=target_dtype)
+	
+
 	if mask is None:
 		mask = torch.ones_like(alpha, dtype=torch.bool, device=device)
 	else:
@@ -85,6 +87,7 @@ def encoder_recon(
 	# v = B^T (inv_sigma * (r - alpha))
 	resid = r - alpha
 	weighted_resid = inv_sigma * resid
+	
 	v = torch.matmul(B.transpose(-2, -1), weighted_resid.unsqueeze(-1)).squeeze(-1)  # (batch,F)
 
 	# Prior mu_z, Sigma_z handling
@@ -96,10 +99,16 @@ def encoder_recon(
 	if Sigma_z is None:
 		Sigma_z = torch.eye(F, dtype=target_dtype, device=device).expand(batch_size, F, F).contiguous()
 	else:
+		# Ensure Sigma_z has correct dimensions and dtype
 		if Sigma_z.dim() == 2:
-			Sigma_z = Sigma_z.unsqueeze(0).expand(batch_size, F, F).contiguous()
-		else:
+			Sigma_z = Sigma_z.unsqueeze(0).expand(batch_size, F, F).contiguous().to(device=device, dtype=target_dtype)
+		elif Sigma_z.dim() == 3:
+			# Ensure it's on the right device/dtype and has the right batch size
 			Sigma_z = Sigma_z.to(device=device, dtype=target_dtype)
+			if Sigma_z.shape[0] == 1 and batch_size > 1:
+				Sigma_z = Sigma_z.expand(batch_size, F, F).contiguous()
+		else:
+			raise ValueError(f"Sigma_z must have 2 or 3 dimensions, got {Sigma_z.dim()}")
 	
 	# Student-T to Normal moment matching (Section 3.3)
 	# For Student-T with df=nu: variance = sigma^2 * nu/(nu-2)
@@ -155,7 +164,7 @@ def encoder_recon(
 	# Compute posterior mean and covariance
 	b_term = torch.matmul(Sigma_z_inv, mu_z.unsqueeze(-1)).squeeze(-1) + v
 	mu_q = torch.cholesky_solve(b_term.unsqueeze(-1), L).squeeze(-1)
-
+	
 	# Compute Sigma_q and its Cholesky
 	Sigma_q = torch.cholesky_solve(I_F, L) if return_full_cov or True else None
 	if Sigma_q is not None:

@@ -2,6 +2,19 @@
 
 Implementation of "NeuralFactors: A Novel Factor Learning Approach to Generative Modeling of Equities" by Achintya Gopal (arXiv:2408.01499v1).
 
+**Project Status**: ✅ Model architecture complete, training pipeline operational, data quality issues resolved.
+
+## Recent Updates
+
+- **2026-02-07**: Fixed critical data quality issue causing NaN loss during training
+  - Root cause: Infinite values in log returns from zero/negative prices
+  - Solution: Replace `±Inf` with `NaN` in `compute_returns()` for proper masking
+  - Training now proceeds stably with all model parameters learnable
+  
+- **Architecture**: All components implemented and tested (Stock Embedder, Encoder, Decoder, Prior, NeuralFactors)
+- **Training**: CIWAE loss with k=20 importance samples, Polyak averaging, gradient clipping
+- **Data**: Brazilian IBX stocks (2005-2025), ~100 constituents, 12 time-series + 3 static features
+
 ## Repository Structure
 
 ```
@@ -452,6 +465,74 @@ python scripts/train.py \
 - **GPU detection**: Automatically falls back to CPU if CUDA unavailable
 - **Tensor shapes**: Collate function flattens batch and stock dimensions for model compatibility
 - **Data format**: Converts wide-format returns to long format (date, ticker, return)
+- **Infinite returns from bad prices**: Fixed in `data_utils.py` by replacing `±Inf` with `NaN` after log returns computation
+  - Root cause: Some stocks have zero or negative prices in raw data
+  - `np.log(0)` or `np.log(negative)` produces `-Inf` which propagates through the model
+  - Solution: `returns_df.replace([np.inf, -np.inf], np.nan)` immediately after computing log returns
+  - Masked stocks are then properly excluded during training via the dataset's `fillna(0)` and masking
+
+---
+
+## Data Quality & Troubleshooting
+
+### Critical Fix: Infinite Returns Handling
+
+**Problem**: Training crashes with NaN loss around step 12 due to infinite values in return data.
+
+**Root Cause**:
+1. Raw price data contains stocks with `price ≤ 0` (data errors, delistings, or bankruptcies)
+2. Log returns computation: `np.log(price_t / price_t-1)` produces `-Inf` when price ≤ 0
+3. These `-Inf` values propagate through normalization unchanged
+4. Dataset loads returns with `-Inf` into tensors
+5. Model's encoder computes `inv_sigma * (r - alpha)` → weighted_resid = `-Inf`
+6. Matrix operations with `-Inf` produce `NaN` in posterior mean `mu_q`
+7. All downstream computations become `NaN`, causing training failure
+
+**Solution** (implemented in [src/utils/data_utils.py](src/utils/data_utils.py)):
+```python
+# In compute_returns() function
+returns_df = returns_df.replace([np.inf, -np.inf], np.nan)
+```
+
+This ensures:
+- Invalid returns are converted to `NaN` (not `-Inf`)
+- Dataset's `fillna(0)` handles `NaN` properly
+- Masking system excludes problematic stocks from loss computation
+- Model receives clean data without infinite values
+
+**Verification**:
+- Training should proceed smoothly past step 12
+- No `NaN` in loss values during training
+- Monitor logs for stocks with consistent missing data
+
+**Recommendations**:
+- Audit raw price data for stocks with `price ≤ 0`
+- Consider pre-filtering stocks with suspicious price patterns
+- Log which stocks/dates have invalid returns for analysis
+
+### Numerical Stability Best Practices
+
+**Gradient Clipping**:
+- Enabled with `gradient_clip_val=1.0, gradient_clip_algorithm='norm'`
+- Prevents gradient explosion in prior parameters and embedder
+- Particularly important during early training
+
+**Output Clamping**:
+- Stock embedder outputs are clamped to prevent extreme values:
+  - `alpha`: `[-100, 100]`
+  - `beta`: `[-10, 10]`
+  - `sigma`: `[eps, 100]`
+  - `nu`: `[4.0, 100]` (ensures finite kurtosis)
+
+**Float64 in Encoder**:
+- Encoder uses FP64 for Cholesky decomposition
+- Prevents numerical instability in precision matrix computation
+- Configured via `EncoderConfig.use_fp64=True`
+
+**Adaptive Jitter**:
+- Cholesky decomposition uses adaptive jitter starting at `1e-4`
+- Multiplies by 2.0 on failure, max jitter `10.0`
+- Ensures positive definiteness of covariance matrices
 
 ---
 

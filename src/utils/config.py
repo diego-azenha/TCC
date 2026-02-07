@@ -91,7 +91,7 @@ class PriorConfig:
     
     # Initial values for learnable prior parameters
     mu_z_init: float = 0.0  # Initial mean (paper sets this to 0)
-    sigma_z_init: float = 1.0  # Initial scale
+    sigma_z_init: float = 10.0  # Initial scale (increased for numerical stability)
     nu_z_init: float = 10.0  # Initial degrees of freedom (>4 required)
     
     def __post_init__(self):
@@ -112,8 +112,8 @@ class EncoderConfig:
     
     # Numerical stability parameters
     eps: float = 1e-8  # Epsilon for inverse sigma computation
-    jitter_init: float = 1e-6  # Initial Cholesky jitter
-    jitter_max: float = 1e-1  # Maximum Cholesky jitter
+    jitter_init: float = 1e-4  # Initial Cholesky jitter (increased for stability)
+    jitter_max: float = 10.0  # Maximum Cholesky jitter (greatly increased)
     jitter_multiplier: float = 2.0  # Jitter increase factor (changed from 10x to 2x for stability)
     use_fp64: bool = True  # Use float64 for numerical stability in encoder
     

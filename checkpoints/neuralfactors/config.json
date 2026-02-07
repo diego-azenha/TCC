@@ -2,7 +2,7 @@
   "model": {
     "num_factors": 64,
     "hidden_size": 256,
-    "d_ts": 13,
+    "d_ts": 12,
     "d_static": 3,
     "lookback": 256,
     "nhead": 4,
@@ -14,13 +14,13 @@
     "use_fp64": false,
     "prior_config": {
       "mu_z_init": 0.0,
-      "sigma_z_init": 1.0,
+      "sigma_z_init": 10.0,
       "nu_z_init": 10.0
     },
     "encoder_config": {
       "eps": 1e-08,
-      "jitter_init": 1e-06,
-      "jitter_max": 0.1,
+      "jitter_init": 0.0001,
+      "jitter_max": 10.0,
       "jitter_multiplier": 2.0,
       "use_fp64": true
     }
@@ -65,6 +65,6 @@
     "experiment_name": "neuralfactors",
     "seed": 42,
     "gpus": 1,
-    "fast_dev_run": true
+    "fast_dev_run": false
   }
 }

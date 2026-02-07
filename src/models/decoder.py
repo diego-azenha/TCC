@@ -31,18 +31,39 @@ def _promote_batch(x: Optional[torch.Tensor], expected_ndim: int):
 
 
 def _canonicalize_B_alpha_sigma_nu(alpha, B, sigma, nu):
-	# B: (N,F) or (batch,N,F)
+	# B: (N,F) or (batch,N,F) or (batch,K,N,F)
 	if B.dim() == 2:
 		B = B.unsqueeze(0)
-	batch_size, N, F = B.shape
-
-	# promote 1D to batch
-	if alpha is not None and alpha.dim() == 1:
-		alpha = alpha.unsqueeze(0)
-	if sigma is not None and sigma.dim() == 1:
-		sigma = sigma.unsqueeze(0)
-	if nu is not None and nu.dim() == 1:
-		nu = nu.unsqueeze(0)
+	
+	# If B is 4D: (batch, K, N, F), reshape to (batch*K, N, F)
+	if B.dim() == 4:
+		batch, K, N, F = B.shape
+		B = B.reshape(batch * K, N, F)
+		# Need to expand alpha, sigma, nu as well
+		if alpha is not None:
+			if alpha.dim() == 3:  # (batch, K, N)
+				alpha = alpha.reshape(batch * K, N)
+			elif alpha.dim() == 1:
+				alpha = alpha.unsqueeze(0)
+		if sigma is not None:
+			if sigma.dim() == 3:  # (batch, K, N)
+				sigma = sigma.reshape(batch * K, N)
+			elif sigma.dim() == 1:
+				sigma = sigma.unsqueeze(0)
+		if nu is not None:
+			if nu.dim() == 3:  # (batch, K, N)
+				nu = nu.reshape(batch * K, N)
+			elif nu.dim() == 1:
+				nu = nu.unsqueeze(0)
+	else:
+		batch_size, N, F = B.shape
+		# promote 1D to batch
+		if alpha is not None and alpha.dim() == 1:
+			alpha = alpha.unsqueeze(0)
+		if sigma is not None and sigma.dim() == 1:
+			sigma = sigma.unsqueeze(0)
+		if nu is not None and nu.dim() == 1:
+			nu = nu.unsqueeze(0)
 
 	return alpha, B, sigma, nu
 
@@ -93,12 +114,26 @@ def log_pdf_r_given_z(
 	device = B.device
 	target_dtype = torch.float64 if use_fp64 else torch.get_default_dtype()
 
-	# canonicalize B/alpha/sigma/nu
-	alpha, B, sigma, nu = _canonicalize_B_alpha_sigma_nu(alpha, B, sigma, nu)
-
 	# z -> (batch, K, F)
 	z, K = _canonicalize_z(z)
+	original_batch = z.shape[0]
+	original_K = K
+	original_F = z.shape[2]  # Capture F before any reshaping
 	z = z.to(device=device, dtype=target_dtype)
+
+	# canonicalize B/alpha/sigma/nu (may reshape from [batch,K,N,F] to [batch*K,N,F])
+	alpha, B, sigma, nu = _canonicalize_B_alpha_sigma_nu(alpha, B, sigma, nu)
+	
+	# If B was reshaped to [batch*K, N, F], also reshape z and r
+	if B.shape[0] == original_batch * original_K:
+		# Reshape z from [batch, K, F] to [batch*K, 1, F]
+		z = z.reshape(original_batch * original_K, 1, original_F)
+		K = 1  # Now K dimension is merged into batch
+		
+		# Reshape r from [batch, K, N] to [batch*K, N]
+		if r is not None:
+			if r.dim() == 3 and r.shape[1] == original_K:
+				r = r.reshape(original_batch * original_K, r.shape[2])
 
 	# cast arrays
 	B = B.to(device=device, dtype=target_dtype)
@@ -113,6 +148,9 @@ def log_pdf_r_given_z(
 	if mask is None:
 		mask = torch.ones_like(alpha, dtype=torch.bool, device=device)
 	else:
+		# Reshape mask from [batch, K, N] to [batch*K, N] if needed
+		if mask.dim() == 3 and mask.shape[1] == original_K:
+			mask = mask.reshape(original_batch * original_K, mask.shape[2])
 		mask = mask.to(device=device)
 
 	# r: (batch,N) -> promote
@@ -173,8 +211,15 @@ def log_pdf_r_given_z(
 	# sum over assets -> (batch, K)
 	joint = torch.sum(logpdf, dim=1)
 
+	# Reshape back from [batch*K, ...] to [batch, K, ...]
+	if original_K > 1 and K == 1:
+		# We merged batch and K dimensions earlier, reshape back
+		joint = joint.squeeze(-1) if joint.shape[-1] == 1 else joint
+		joint = joint.reshape(original_batch, original_K)
+		if return_per_asset:
+			per_asset = logpdf.reshape(original_batch, original_K, logpdf.shape[1])
 	# squeeze K dim if K==1 for ease of use
-	if K == 1:
+	elif K == 1:
 		joint = joint.squeeze(-1)
 		per_asset = logpdf.squeeze(-1) if return_per_asset else None
 	else:

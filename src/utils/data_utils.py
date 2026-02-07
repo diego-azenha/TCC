@@ -132,6 +132,10 @@ def compute_returns(prices_df: pd.DataFrame, log_returns: bool = True) -> pd.Dat
     # Drop first row (NaN from shift)
     returns_df = returns_df.iloc[1:].reset_index(drop=True)
     
+    # [FIX] Replace -Inf/Inf with NaN (happens when price is 0 or negative)
+    # These will be handled by masking in the dataset
+    returns_df = returns_df.replace([np.inf, -np.inf], np.nan)
+    
     return returns_df
 
 

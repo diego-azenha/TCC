@@ -80,6 +80,10 @@ class StockEmbedder(nn.Module):
         self.beta_head = nn.Linear(h, F)
         self.sigma_head = nn.Linear(h, 1)
         self.nu_head = nn.Linear(h, 1)
+        
+        # Initialize beta_head with small weights for numerical stability
+        nn.init.normal_(self.beta_head.weight, mean=0.0, std=0.01)
+        nn.init.zeros_(self.beta_head.bias)
 
     def _act(self, x: torch.Tensor) -> torch.Tensor:
         """Apply activation function."""
@@ -106,6 +110,12 @@ class StockEmbedder(nn.Module):
         
         device = S.device
         
+        # Check for NaN/Inf in inputs
+        if torch.isnan(S).any():
+            raise ValueError(f"S contains NaN values: {torch.isnan(S).sum().item()} elements")
+        if torch.isinf(S).any():
+            raise ValueError(f"S contains Inf values: {torch.isinf(S).sum().item()} elements")
+        
         if S_static.dim() == 1:
             S_static = S_static.unsqueeze(-1)
         elif S_static.dim() == 2:
@@ -113,6 +123,11 @@ class StockEmbedder(nn.Module):
                 raise ValueError(f"d_static mismatch: expected {self.d_static}, got {S_static.shape[-1]}")
         else:
             raise ValueError(f"S_static must be (N,d_static) or (N,), got {tuple(S_static.shape)}")
+        
+        if torch.isnan(S_static).any():
+            raise ValueError(f"S_static contains NaN values")
+        if torch.isinf(S_static).any():
+            raise ValueError(f"S_static contains Inf values")
         
         S_static = S_static.to(device)
         
@@ -141,6 +156,12 @@ class StockEmbedder(nn.Module):
         beta = self.beta_head(H3)  # (N, F)
         sigma = F.softplus(self.sigma_head(H3)).squeeze(-1) + self.sigma_eps  # (N,)
         nu = F.softplus(self.nu_head(H3)).squeeze(-1) + self.nu_offset  # (N,)
+        
+        # [STABILITY] Clamp outputs to prevent numerical issues
+        alpha = torch.clamp(alpha, min=-100.0, max=100.0)
+        beta = torch.clamp(beta, min=-10.0, max=10.0)
+        sigma = torch.clamp(sigma, min=self.sigma_eps, max=100.0)
+        nu = torch.clamp(nu, min=self.nu_offset, max=100.0)
 
         return alpha, beta, sigma, nu
 

@@ -65,28 +65,52 @@ class NeuralFactors(nn.Module):
             mu_q: [batch, F] posterior mean
             L_q: [batch, F, F] posterior Cholesky factor
         """
+        # Paper uses batch_size=1, so we squeeze/unsqueeze to match embedder expectations
+        # S: [batch, N, L, d_ts] -> [N, L, d_ts] (batch must be 1)
+        # S_static: [batch, N, d_static] -> [N, d_static]
+        batch_size = S.shape[0]
+        if batch_size != 1:
+            raise ValueError(f"encode expects batch_size=1 (as per paper), got {batch_size}")
+        
+        S_no_batch = S.squeeze(0)  # [N, L, d_ts]
+        S_static_no_batch = S_static.squeeze(0)  # [N, d_static]
+        r_no_batch = r.squeeze(0) if r.dim() == 2 else r  # [N]
+        mask_no_batch = mask.squeeze(0) if mask is not None and mask.dim() == 2 else mask  # [N] or None
+        
         # Generate factor model parameters
-        alpha, B, sigma, nu = self.embedder(S, S_static)
+        alpha, B, sigma, nu = self.embedder(S_no_batch, S_static_no_batch)
         
         # Get prior parameters for encoder (as Normal via moment matching)
         mu_z, Sigma_z = self.prior.to_normal_params()
         
-        # Expand prior to match batch dimension
-        batch = r.shape[0]
-        mu_z_batch = mu_z.unsqueeze(0).expand(batch, -1)
-        Sigma_z_batch = Sigma_z.unsqueeze(0).expand(batch, -1, -1)
-        
+        # Encoder expects no batch dimension (will add it internally if needed)
         # Compute analytical posterior q(z|r)
         mu_q, L_q, _, _ = enc.encoder_recon(
             alpha=alpha,
             B=B,
             sigma=sigma,
-            r=r,
-            mu_z=mu_z_batch,
-            Sigma_z=Sigma_z_batch,
-            mask=mask,
-            jitter_multiplier=self.config.encoder_config.jitter_multiplier
+            r=r_no_batch,
+            mu_z=mu_z,
+            Sigma_z=Sigma_z,
+            mask=mask_no_batch,
+            eps=self.config.encoder_config.eps,
+            jitter_init=self.config.encoder_config.jitter_init,
+            jitter_max=self.config.encoder_config.jitter_max,
+            jitter_multiplier=self.config.encoder_config.jitter_multiplier,
+            use_fp64=self.config.encoder_config.use_fp64,
         )
+        
+        # Add batch dimension back for consistency: [N, ...] -> [batch, N, ...]
+        alpha = alpha.unsqueeze(0)  # [1, N]
+        B = B.unsqueeze(0)  # [1, N, F]
+        sigma = sigma.unsqueeze(0)  # [1, N]
+        nu = nu.unsqueeze(0)  # [1, N]
+        
+        # mu_q and L_q might already have batch dim from encoder (if it added it)
+        if mu_q.dim() == 1:
+            mu_q = mu_q.unsqueeze(0)  # [F] -> [1, F]
+        if L_q.dim() == 2:
+            L_q = L_q.unsqueeze(0)  # [F, F] -> [1, F, F]
         
         return alpha, B, sigma, nu, mu_q, L_q
     
@@ -124,8 +148,14 @@ class NeuralFactors(nn.Module):
         
         # Sample z from posterior q(z|r) using reparameterization
         # z = mu_q + L_q @ eps, where eps ~ N(0,I)
-        eps = torch.randn(batch, num_samples, F, device=mu_q.device)  # [batch, K, F]
-        z = mu_q.unsqueeze(1) + torch.einsum('bkf,bfg->bkg', eps, L_q)  # [batch, K, F]
+        # mu_q: [batch, F], L_q: [batch, F, F], eps: [batch, K, F]
+        eps = torch.randn(batch, num_samples, F, device=mu_q.device, dtype=mu_q.dtype)  # [batch, K, F]
+        
+        # Use bmm for batched matrix multiplication: L_q @ eps^T, then transpose back
+        # eps: [batch, K, F] -> [batch, F, K]
+        # L_q @ eps^T: [batch, F, F] @ [batch, F, K] -> [batch, F, K]
+        # Result^T: [batch, K, F]
+        z = mu_q.unsqueeze(1) + torch.bmm(L_q, eps.transpose(1, 2)).transpose(1, 2)  # [batch, K, F]
         
         # Compute log p(r|z) - likelihood
         log_p_r_given_z = dec.log_pdf_r_given_z(

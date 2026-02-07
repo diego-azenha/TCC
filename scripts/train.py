@@ -281,9 +281,11 @@ def main():
         logger=logger,
         log_every_n_steps=100,
         val_check_interval=args.val_every_n_steps,
-        gradient_clip_val=None,  # Paper doesn't mention gradient clipping
+        gradient_clip_val=1.0,  # Clip gradients to prevent explosion
+        gradient_clip_algorithm='norm',  # Clip by global norm
         deterministic=False,  # Faster training
         fast_dev_run=args.fast_dev_run,
+        num_sanity_val_steps=0,  # Skip sanity check - model needs training first before encoder is stable
     )
     
     # Train model
