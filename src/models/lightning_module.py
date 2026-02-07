@@ -98,6 +98,23 @@ class NeuralFactorsLightning(pl.LightningModule):
         ess = 1.0 / torch.sum(weights ** 2, dim=1).mean()
         self.log('train/ess', ess, on_step=True, on_epoch=True)
         
+        # Log learned prior parameters (every 100 steps to monitor convergence)
+        if self.global_step % 100 == 0:
+            mu_z, sigma_z, nu_z = self.model.prior.get_params()
+            self.log('train/prior_sigma_z_mean', sigma_z.mean(), on_step=True, on_epoch=False)
+            self.log('train/prior_sigma_z_std', sigma_z.std(), on_step=True, on_epoch=False)
+            self.log('train/prior_nu_z', nu_z, on_step=True, on_epoch=False)
+            
+            # Log decoder parameter statistics
+            if 'alpha' in output:
+                self.log('train/alpha_mean', output['alpha'].mean(), on_step=True, on_epoch=False)
+                self.log('train/alpha_std', output['alpha'].std(), on_step=True, on_epoch=False)
+            if 'sigma' in output:
+                self.log('train/sigma_mean', output['sigma'].mean(), on_step=True, on_epoch=False)
+                self.log('train/sigma_std', output['sigma'].std(), on_step=True, on_epoch=False)
+            if 'nu' in output:
+                self.log('train/nu_mean', output['nu'].mean(), on_step=True, on_epoch=False)
+        
         return loss
     
     def validation_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
@@ -112,8 +129,8 @@ class NeuralFactorsLightning(pl.LightningModule):
         """
         S, S_static, r, mask = batch
         
-        # Use more samples for validation (paper: 100 for NLL_joint)
-        num_val_samples = 100
+        # Use more samples for validation (paper: 100 for NLL_joint, using 50 for speed)
+        num_val_samples = 50
         
         output = self.model.compute_iwae_loss(
             S=S,
@@ -136,6 +153,12 @@ class NeuralFactorsLightning(pl.LightningModule):
         self.log('val/nll_joint', loss, on_step=False, on_epoch=True)
         self.log('val/log_likelihood', log_likelihood, on_step=False, on_epoch=True)
         self.log('val/kl_divergence', kl_divergence, on_step=False, on_epoch=True)
+        
+        # Compute ESS for validation
+        log_weights = output['log_weights']
+        weights = torch.exp(log_weights - torch.logsumexp(log_weights, dim=1, keepdim=True))
+        ess = 1.0 / torch.sum(weights ** 2, dim=1).mean()
+        self.log('val/ess', ess, on_step=False, on_epoch=True)
         
         return loss
     

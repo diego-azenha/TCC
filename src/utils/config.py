@@ -143,16 +143,16 @@ class TrainingConfig:
     weight_decay: float = 1e-6  # L2 regularization
     
     # Training procedure
-    max_steps: int = 100_000  # Total gradient updates
+    max_steps: int = 17_290  # Total gradient updates (5 epochs = 5 × 3458 steps, ~4.8 hours)
     num_iwae_samples: int = 20  # k in IWAE loss (Equation 3)
     batch_size: int = 1  # Number of days per batch (paper: 1 day = all stocks)
     
     # Validation and checkpointing
-    val_every_n_steps: int = 1_000  # Validation frequency
+    val_every_n_steps: int = 10_000  # Validate only at the end (larger than max_steps)
     
     # Polyak (exponential moving average) for stability
     use_polyak: bool = True
-    polyak_start_step: int = 50_000  # When to start Polyak averaging
+    polyak_start_step: int = 8_645  # When to start Polyak averaging (halfway through training)
     polyak_alpha: float = 0.999  # EMA decay rate (not specified in paper, common default)
     
     # Paths

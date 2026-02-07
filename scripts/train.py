@@ -67,9 +67,9 @@ def parse_args():
     parser.add_argument("--learning_rate", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--weight_decay", type=float, default=1e-6, help="Weight decay")
     parser.add_argument("--num_iwae_samples", type=int, default=20, help="k in IWAE loss")
-    parser.add_argument("--max_steps", type=int, default=100_000, help="Total gradient updates")
-    parser.add_argument("--val_every_n_steps", type=int, default=1_000, help="Validation frequency")
-    parser.add_argument("--polyak_start_step", type=int, default=50_000, help="Polyak averaging start")
+    parser.add_argument("--max_steps", type=int, default=17_290, help="5 epochs (~4.8 hours)")
+    parser.add_argument("--val_every_n_steps", type=int, default=10_000, help="Validate only at the end")
+    parser.add_argument("--polyak_start_step", type=int, default=8_645, help="Polyak averaging start (halfway)")
     parser.add_argument("--polyak_alpha", type=float, default=0.999, help="Polyak EMA decay")
     
     # Data split dates (adjusted for IBX data 2005-2025)
@@ -206,18 +206,20 @@ def main():
         train_dataset,
         batch_size=1,
         shuffle=True,
-        num_workers=0,  # Start with 0 for debugging
+        num_workers=11,  # Parallel data loading for better performance
         collate_fn=collate_fn,
         pin_memory=True if args.gpus > 0 else False,
+        persistent_workers=True,  # Keep workers alive between epochs
     )
     
     val_loader = DataLoader(
         val_dataset,
         batch_size=1,
         shuffle=False,
-        num_workers=0,
+        num_workers=11,  # Parallel data loading for better performance
         collate_fn=collate_fn,
         pin_memory=True if args.gpus > 0 else False,
+        persistent_workers=True,  # Keep workers alive between epochs
     )
     
     print(f"\nDataLoaders created:")
@@ -240,12 +242,12 @@ def main():
     # Setup callbacks
     checkpoint_callback = ModelCheckpoint(
         dirpath=checkpoint_dir,
-        filename='neuralfactors-{step:06d}-{val/loss:.4f}',
-        monitor='val/loss',
+        filename='neuralfactors-{step:06d}-{train/loss_epoch:.4f}',
+        monitor='train/loss_epoch',
         mode='min',
         save_top_k=3,
         save_last=True,
-        every_n_train_steps=args.val_every_n_steps,
+        every_n_epochs=1,  # Save at end of each epoch
     )
     
     lr_monitor = LearningRateMonitor(logging_interval='step')
@@ -275,12 +277,13 @@ def main():
     
     trainer = pl.Trainer(
         max_steps=args.max_steps,
+        max_epochs=-1,  # Unlimited epochs - only stop when max_steps is reached
         accelerator=accelerator,
         devices=devices,
         callbacks=[checkpoint_callback, lr_monitor],
         logger=logger,
         log_every_n_steps=100,
-        val_check_interval=args.val_every_n_steps,
+        limit_val_batches=0.0,  # Disable validation during training
         gradient_clip_val=1.0,  # Clip gradients to prevent explosion
         gradient_clip_algorithm='norm',  # Clip by global norm
         deterministic=False,  # Faster training
@@ -306,8 +309,46 @@ def main():
         polyak_path = checkpoint_dir / "polyak_model.pt"
         torch.save(lightning_module.polyak_model.state_dict(), polyak_path)
         print(f"Saved Polyak-averaged model to {polyak_path}")
+    
+    # Run automatic analysis on test set
+    if not args.fast_dev_run and checkpoint_callback.best_model_path:
+        print("\n" + "="*80)
+        print("Running Automatic Analysis")
+        print("="*80)
+        
+        try:
+            import subprocess
+            
+            # Save to src/evaluation/train/
+            analysis_dir = Path("src") / "evaluation" / "train" / args.experiment_name
+            analysis_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Run analyze.py script
+            analyze_cmd = [
+                sys.executable,
+                str(Path(__file__).parent / "analyze.py"),
+                "--checkpoint", checkpoint_callback.best_model_path,
+                "--data_dir", args.data_dir,
+                "--output_dir", str(analysis_dir),
+                "--split", "test",
+            ]
+            
+            print(f"Running analysis: {' '.join(analyze_cmd)}")
+            result = subprocess.run(analyze_cmd, capture_output=False, text=True)
+            
+            if result.returncode == 0:
+                print(f"\nAnalysis complete! Plots saved to: {analysis_dir}")
+            else:
+                print(f"\nAnalysis failed with return code: {result.returncode}")
+        
+        except Exception as e:
+            print(f"\nWarning: Automatic analysis failed: {e}")
+            print("You can run analysis manually with:")
+            print(f"  python scripts/analyze.py --checkpoint {checkpoint_callback.best_model_path} --data_dir {args.data_dir}")
 
 
 if __name__ == "__main__":
     import pandas as pd  # Import here to avoid circular dependency
+    import sys
     main()
+

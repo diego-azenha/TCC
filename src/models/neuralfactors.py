@@ -204,7 +204,10 @@ class NeuralFactors(nn.Module):
             'loss': iwae_loss,
             'log_likelihood': log_likelihood,
             'kl_divergence': kl_divergence,
-            'log_weights': log_weights.detach()
+            'log_weights': log_weights.detach(),
+            'alpha': alpha.detach(),
+            'sigma': sigma.detach(),
+            'nu': nu.detach(),
         }
     
     def predict(
