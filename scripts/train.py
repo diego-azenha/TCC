@@ -67,9 +67,9 @@ def parse_args():
     parser.add_argument("--learning_rate", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--weight_decay", type=float, default=1e-6, help="Weight decay")
     parser.add_argument("--num_iwae_samples", type=int, default=20, help="k in IWAE loss")
-    parser.add_argument("--max_steps", type=int, default=17_290, help="5 epochs (~4.8 hours)")
-    parser.add_argument("--val_every_n_steps", type=int, default=10_000, help="Validate only at the end")
-    parser.add_argument("--polyak_start_step", type=int, default=8_645, help="Polyak averaging start (halfway)")
+    parser.add_argument("--max_steps", type=int, default=172_900, help="50 epochs (~48 hours)")
+    parser.add_argument("--val_every_n_steps", type=int, default=100_000, help="Validate only at the end")
+    parser.add_argument("--polyak_start_step", type=int, default=86_450, help="Polyak averaging start (halfway)")
     parser.add_argument("--polyak_alpha", type=float, default=0.999, help="Polyak EMA decay")
     
     # Data split dates (adjusted for IBX data 2005-2025)
