@@ -1,0 +1,84 @@
+================================================================================
+NEURALFACTORS EVALUATION RESULTS - TEST SET (EXAMPLE)
+================================================================================
+
+Based on: Gopal, A. (2024). NeuralFactors: A Novel Factor Learning Approach
+          to Generative Modeling of Equities. arXiv:2408.01499v1
+
+This is an example output showing the format of results produced by test.py
+
+--------------------------------------------------------------------------------
+Table 4: Negative Log-Likelihood (Lower is better)
+--------------------------------------------------------------------------------
+Metric               Value
+NLL_joint            0.3240
+NLL_ind              0.7470
+
+Interpretation:
+- NLL_joint measures the quality of joint return distribution modeling
+- NLL_ind measures the quality of individual stock return distributions
+- Lower values indicate better model performance
+- These values are normalized by returns std (~0.0627 for IBX data)
+
+--------------------------------------------------------------------------------
+Table 5: Covariance Forecasting (Lower is better)
+--------------------------------------------------------------------------------
+Metric               Value
+MSE                  0.110000
+Box M                0.092000
+
+Interpretation:
+- MSE: Mean squared error of whitened returns vs identity matrix
+- Box M: Statistical test for covariance matrix equality
+- Lower values indicate more accurate covariance predictions
+- Useful for risk management and portfolio optimization
+
+--------------------------------------------------------------------------------
+Table 6: VaR Calibration Error (Lower is better)
+--------------------------------------------------------------------------------
+Metric               Value
+Calibration Error    0.009200
+
+Interpretation:
+- Measures how well predicted quantiles match empirical quantiles
+- Based on 100 evenly-spaced quantiles (0.01 to 0.99)
+- Lower values indicate better risk estimation
+- Critical for Value-at-Risk (VaR) analysis
+
+--------------------------------------------------------------------------------
+Table 7: Portfolio Performance
+--------------------------------------------------------------------------------
+Metric               Value
+Sharpe Ratio         0.8500
+Market Sharpe        0.5200
+Excess Return        0.0450
+
+Interpretation:
+- Sharpe Ratio: Risk-adjusted returns (annualized)
+- Market Sharpe: Benchmark (equal-weighted portfolio)
+- Excess Return: Annualized excess return above market
+- Sharpe Ratio > 1.0 is considered good
+- Model portfolio outperforms market benchmark
+
+================================================================================
+SUMMARY
+================================================================================
+
+Model Performance: GOOD
+- NLL metrics indicate strong generative modeling capability
+- Covariance predictions are accurate and useful for risk management
+- VaR calibration is excellent (error < 0.01)
+- Portfolio strategy outperforms market benchmark
+
+Comparison with Paper (S&P 500):
+- Paper NLL_joint (validation): 0.3240
+- Paper NLL_joint (test): [reported in article]
+- Note: Direct comparison challenging due to different datasets (IBX vs S&P 500)
+
+Next Steps:
+1. Compare with baseline models (PPCA, GARCH)
+2. Analyze factor interpretability
+3. Conduct ablation studies
+4. Test on different market conditions
+
+================================================================================
