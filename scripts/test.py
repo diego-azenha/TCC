@@ -287,8 +287,8 @@ def compute_covariance_metrics(model, dataloader, device):
     
     # MSE: E[(r_whitened^T @ r_whitened - I)]
     # For whitened returns, covariance should be identity
-    mse = np.mean(whitened_returns**2) - 1.0
-    mse = mse**2
+    whitened_variance_diff = np.mean(whitened_returns**2) - 1.0
+    mse = whitened_variance_diff**2
     
     # Box's M test
     # This tests if covariance of whitened returns equals identity
@@ -545,8 +545,8 @@ def save_results(results, output_dir, split_name):
         f.write("Table 7: Portfolio Performance\n")
         f.write("-"*80 + "\n")
         f.write(f"Sharpe Ratio: {results['sharpe_ratio']:.4f}\n")
-        f.write(f"Market Sharpe:{results['market_sharpe']:.4f}\n")
-        f.write(f"Excess Return:{results['excess_return']:.4f}\n")
+        f.write(f"Market Sharpe: {results['market_sharpe']:.4f}\n")
+        f.write(f"Excess Return: {results['excess_return']:.4f}\n")
         f.write("="*80 + "\n")
     
     print(f"Formatted table saved to: {table_path}")
