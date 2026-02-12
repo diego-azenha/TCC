@@ -461,7 +461,7 @@ def print_results_table(results, split_name):
     print(f"{'Metric':<20} {'Value':>15}")
     if results.get('cov_mse') is not None:
         print(f"{'MSE':<20} {results['cov_mse']:>15.6f}")
-        print(f"{'Box\\'s M':<20} {results['box_m']:>15.6f}")
+        print(f"{'Box M':<20} {results['box_m']:>15.6f}")
     else:
         print("  (Computation failed)")
     

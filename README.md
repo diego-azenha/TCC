@@ -45,7 +45,7 @@ TCC/
 │   └── evaluation/         # Evaluation metrics and analysis
 ├── scripts/
 │   ├── train.py            # [DONE] Training script with CLI
-│   └── test.py             # [TODO] Testing and evaluation
+│   └── test.py             # [DONE] Testing and evaluation with article metrics
 ├── checkpoints/            # Saved model checkpoints
 ├── logs/                   # TensorBoard training logs
 ├── NEURALFACTORSARTICLE.txt  # Original paper text
@@ -536,14 +536,51 @@ This ensures:
 
 ---
 
-## Evaluation [WIP]
+## Evaluation [DONE]
 
-**Not yet implemented**. Planned metrics:
+**Status**: Complete evaluation infrastructure with article-format metrics.
 
-- Negative log-likelihood (joint and individual)
-- Covariance forecasting (MSE, Box's M test)
-- Value-at-Risk (VaR) calibration
-- Portfolio optimization (Sharpe ratio)
+### Test Script (`scripts/test.py`)
+
+Implements all evaluation metrics from the paper (Tables 4-7):
+
+**Usage**:
+```bash
+# Evaluate on test set
+python scripts/test.py \
+    --checkpoint checkpoints/neuralfactors/last.ckpt \
+    --data_dir data \
+    --split test \
+    --output_dir results_test
+
+# Quick evaluation (fewer samples)
+python scripts/test.py \
+    --checkpoint checkpoints/neuralfactors/last.ckpt \
+    --split test \
+    --num_joint_samples 20 \
+    --num_ind_samples 100 \
+    --output_dir results_quick
+```
+
+**Metrics Implemented**:
+- **Table 4**: Negative log-likelihood (joint and individual)
+  - NLL_joint: Log-likelihood of joint distribution across universe
+  - NLL_ind: Log-likelihood of individual stock distributions
+- **Table 5**: Covariance forecasting
+  - MSE: Mean squared error of whitened returns
+  - Box's M: Statistical test for covariance equality
+- **Table 6**: Value-at-Risk (VaR) calibration
+  - Calibration error: Quantile prediction accuracy (100 quantiles)
+- **Table 7**: Portfolio optimization
+  - Sharpe ratio: Risk-adjusted returns
+  - Market benchmark comparison
+
+**Output Files**:
+- `results_{split}.json`: Summary metrics in JSON format
+- `results_table_{split}.txt`: Formatted table matching article style
+- `nll_joint_per_day_{split}.csv`: Daily NLL values for temporal analysis
+
+**Documentation**: See [docs/TEST_SCRIPT_USAGE.md](docs/TEST_SCRIPT_USAGE.md) for detailed usage instructions.
 
 ---
 
@@ -577,8 +614,9 @@ Gopal, A. (2024). NeuralFactors: A Novel Factor Learning Approach to Generative 
 - [DONE] Polyak averaging
 - [DONE] Training script with CLI
 
-**Phase 3: Evaluation** [TODO]
-- Metrics implementation (NLL_ind, covariance forecasting, VaR)
-- Baseline comparisons (PPCA, BDG, GARCH)
-- Ablation studies
-- Test script
+**Phase 3: Evaluation** [DONE]
+- [DONE] Metrics implementation (NLL_ind, NLL_joint, covariance forecasting, VaR)
+- [DONE] Test script with article-format output
+- [DONE] Portfolio optimization metrics (Sharpe ratio)
+- [TODO] Baseline comparisons (PPCA, BDG, GARCH)
+- [TODO] Ablation studies
