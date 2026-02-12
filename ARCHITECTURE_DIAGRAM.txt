@@ -1,0 +1,245 @@
+# NeuralFactors Test Script - Visual Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          NEURALFACTORS TEST PIPELINE                         │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  INPUT: Trained Model + Data                                                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  • Model Checkpoint: checkpoints/neuralfactors_50epochs/best.ckpt           │
+│  • Data: IBX stocks (2005-2025)                                              │
+│    - Train: 2005-2018 (14 years)                                             │
+│    - Val:   2019-2022 (4 years)                                              │
+│    - Test:  2023-2025 (3 years)                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  EVALUATION MODULES (src/evaluation/)                                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│  ┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐ │
+│  │   metrics.py        │  │   baselines.py      │  │   portfolio.py      │ │
+│  ├─────────────────────┤  ├─────────────────────┤  ├─────────────────────┤ │
+│  │ • nll_joint()       │  │ • PPCAModel         │  │ • mean_variance_    │ │
+│  │ • nll_individual()  │  │ • GARCHModel        │  │   optimization()    │ │
+│  │ • covariance_mse()  │  │ • fit()             │  │ • long_only()       │ │
+│  │ • box_m_test()      │  │ • predict()         │  │ • long_short()      │ │
+│  │ • calibration_      │  │ • get_mean_cov()    │  │ • leveraged()       │ │
+│  │   error()           │  │                     │  │ • sharpe_ratio()    │ │
+│  └─────────────────────┘  └─────────────────────┘  └─────────────────────┘ │
+│                                                                               │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │   reporting.py                                                         │  │
+│  ├───────────────────────────────────────────────────────────────────────┤  │
+│  │ • generate_table_3()  # Ablation studies                              │  │
+│  │ • generate_table_4()  # NLL comparison                                │  │
+│  │ • generate_table_5()  # Covariance forecasting                        │  │
+│  │ • generate_table_6()  # VaR analysis                                  │  │
+│  │ • generate_table_7()  # Portfolio optimization                        │  │
+│  │ • plot_comparisons()  # Visualizations                                │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  TEST SCRIPTS (scripts/)                                                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│  ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐        │
+│  │  test_nll.py     │   │ test_portfolio.py│   │   test.py        │        │
+│  │  (Phase 1)       │   │  (Phase 2)       │   │   (Complete)     │        │
+│  │  ────────────    │   │  ────────────    │   │  ────────────    │        │
+│  │  MVP - Critical  │   │  MVP - Critical  │   │  All metrics     │        │
+│  │  • Compute NLL   │   │  • Backtest      │   │  • Run all       │        │
+│  │  • Val + Test    │   │    portfolio     │   │    phases        │        │
+│  │  • Compare PPCA  │   │  • 4 strategies  │   │  • Baselines     │        │
+│  │                  │   │  • Val + Test    │   │  • Ablations     │        │
+│  └──────────────────┘   └──────────────────┘   └──────────────────┘        │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  OUTPUT: Results & Reports                                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│  results/                                                                     │
+│  ├── test_results.json              # All metrics in structured format      │
+│  ├── report.md                      # Complete markdown report               │
+│  ├── table_3_ablation.csv           # Ablation study results                │
+│  ├── table_4_nll.csv                # NLL comparison table                  │
+│  ├── table_5_covariance.csv         # Covariance forecasting                │
+│  ├── table_6_var.csv                # VaR calibration                       │
+│  ├── table_7_portfolio.csv          # Portfolio performance                 │
+│  └── plots/                                                                  │
+│      ├── nll_comparison.png         # Bar chart: NLL by model               │
+│      ├── sharpe_comparison.png      # Bar chart: Sharpe by strategy         │
+│      └── calibration_curves.png     # Line plots: VaR calibration           │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════════════
+                              ARTICLE TABLES MAPPING
+═══════════════════════════════════════════════════════════════════════════════
+
+Table 3: Ablation Studies (Validation Set)
+┌──────────────────────────┬─────────────┐
+│ Experiment               │ NLLjoint    │
+├──────────────────────────┼─────────────┤
+│ Number of Factors        │             │
+│  • 64 Factors (default)  │   0.3240    │
+│  • 32 Factors            │   0.3289    │
+│  • 128 Factors           │   0.3249    │
+├──────────────────────────┼─────────────┤
+│ Features                 │             │
+│  • All Features          │   0.3240    │
+│  • w/o Options & Volume  │   0.3430    │
+├──────────────────────────┼─────────────┤
+│ Architecture             │             │
+│  • Attention (default)   │   0.3240    │
+│  • LSTM                  │   0.3419    │
+├──────────────────────────┼─────────────┤
+│ Loss                     │             │
+│  • IWAE k=20 (default)   │   0.3240    │
+│  • VAE (k=1)             │   0.3262    │
+└──────────────────────────┴─────────────┘
+
+
+Table 4: Negative Log-Likelihood (Val & Test)
+┌──────────────────────┬────────┬────────┬────────┬────────┐
+│ Model                │ Val    │ Val    │ Test   │ Test   │
+│                      │ NLLind │ NLLj   │ NLLind │ NLLj   │
+├──────────────────────┼────────┼────────┼────────┼────────┤
+│ NeuralFactors-Attn   │ 0.747  │ 0.324  │ 1.029  │ 0.556  │
+│ PPCA (12 Factors)    │ 1.016  │ 0.441  │ 1.326  │ 0.664  │
+│ GARCH Skew Student   │ 0.774  │  N/A   │ 1.053  │  N/A   │
+└──────────────────────┴────────┴────────┴────────┴────────┘
+
+
+Table 5: Covariance Forecasting
+┌──────────────────────┬─────────┬──────────┬─────────┬──────────┐
+│ Model                │ Val MSE │ Val Box  │ Test MSE│ Test Box │
+├──────────────────────┼─────────┼──────────┼─────────┼──────────┤
+│ NeuralFactors-Attn   │  0.181  │   1.756  │  0.282  │  2.226   │
+│ PPCA (12 Factors)    │  0.378  │   2.367  │  0.881  │  3.476   │
+└──────────────────────┴─────────┴──────────┴─────────┴──────────┘
+
+
+Table 6: VaR Calibration Error
+┌──────────────────────┬─────────┬─────────┬─────────┬─────────┐
+│ Model                │ Val Uni │ Val Port│ Test Uni│ Test Prt│
+├──────────────────────┼─────────┼─────────┼─────────┼─────────┤
+│ NeuralFactors-Attn   │  0.110  │  0.360  │  0.042  │  0.074  │
+│ PPCA (12 Factors)    │  0.810  │  0.818  │  0.741  │  0.433  │
+│ GARCH Skew Student   │  0.073  │  0.063  │  0.049  │  0.005  │
+└──────────────────────┴─────────┴─────────┴─────────┴─────────┘
+Note: GARCH has best VaR calibration (as per article)
+
+
+Table 7: Portfolio Optimization (Sharpe Ratios)
+┌──────────────────────┬─────┬─────┬──────────┬──────────┬─────┬─────┬──────────┬──────────┐
+│ Model                │ Val │ Val │ Val L    │ Val L/S  │ Test│ Test│ Test L   │ Test L/S │
+│                      │  L  │ L/S │ Lev. 1   │ Lev. 1   │  L  │ L/S │ Lev. 1   │ Lev. 1   │
+├──────────────────────┼─────┼─────┼──────────┼──────────┼─────┼─────┼──────────┼──────────┤
+│ NeuralFactors-Attn   │ 1.87│ 3.68│   1.72   │   1.35   │ 1.20│ 2.54│   1.04   │   1.30   │
+│ PPCA (12 Factors)    │ 0.43│-0.07│   0.46   │   0.44   │ 0.56│ 0.02│   0.56   │   0.34   │
+└──────────────────────┴─────┴─────┴──────────┴──────────┴─────┴─────┴──────────┴──────────┘
+L = Long-Only, L/S = Long-Short
+
+
+═══════════════════════════════════════════════════════════════════════════════
+                           IMPLEMENTATION TIMELINE
+═══════════════════════════════════════════════════════════════════════════════
+
+MVP (Minimum Viable Product) - 2-3 weeks
+┌────────────────────────────────────────────────────────────────────┐
+│ Week 1-2: Core Metrics                                             │
+│ ├─ Phase 0: Setup (1-2 days)                                       │
+│ ├─ Phase 1: NLL (3-5 days)          ← CRITICAL                     │
+│ └─ Phase 2: Portfolio (3-5 days)    ← CRITICAL                     │
+│                                                                     │
+│ Week 3: Reporting                                                  │
+│ └─ Phase 7 (subset): Basic report with Tables 4 & 7               │
+└────────────────────────────────────────────────────────────────────┘
+
+Complete Implementation - 3-4 weeks
+┌────────────────────────────────────────────────────────────────────┐
+│ Week 1-2: MVP (as above)                                           │
+│                                                                     │
+│ Week 3: Additional Metrics                                         │
+│ ├─ Phase 3: Covariance (2-3 days)                                 │
+│ └─ Phase 4: VaR (2-3 days)                                         │
+│                                                                     │
+│ Week 4: Baselines & Reports                                        │
+│ ├─ Phase 5: PPCA (3-4 days)                                        │
+│ ├─ Phase 6: GARCH (2-3 days)                                       │
+│ └─ Phase 7: Complete reports & plots                               │
+└────────────────────────────────────────────────────────────────────┘
+
+Full Implementation with Ablations - 7-8 weeks
+┌────────────────────────────────────────────────────────────────────┐
+│ Week 1-4: Complete Implementation (as above)                       │
+│                                                                     │
+│ Week 5-8: Ablation Studies (Optional)                              │
+│ ├─ Train models with F ∈ {8, 16, 32, 64, 128}                     │
+│ ├─ Train models with different features                            │
+│ ├─ Train models with LSTM vs Attention                             │
+│ └─ Generate Table 3                                                │
+│                                                                     │
+│ Note: Requires significant GPU resources (~300-500 GPU-hours)      │
+└────────────────────────────────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════════════
+                              QUICK START GUIDE
+═══════════════════════════════════════════════════════════════════════════════
+
+1. Read Documentation
+   └─ Start: TESTING_README.md
+   └─ Detail: PLANO_SCRIPT_TESTES.md
+   └─ Implementation: IMPLEMENTACAO_ROADMAP.md
+
+2. Setup Environment
+   $ pip install cvxpy scipy statsmodels arch
+   $ ls checkpoints/  # Verify model exists
+   $ ls data/parquets/  # Verify data exists
+
+3. Implement Phase 1 (NLL)
+   └─ Create: src/evaluation/metrics.py
+   └─ Create: scripts/test_nll.py
+   └─ Run: python scripts/test_nll.py --checkpoint checkpoints/best.ckpt
+
+4. Implement Phase 2 (Portfolio)
+   └─ Create: src/evaluation/portfolio.py
+   └─ Create: scripts/test_portfolio.py
+   └─ Run: python scripts/test_portfolio.py --checkpoint checkpoints/best.ckpt
+
+5. Generate Reports
+   └─ Create: src/evaluation/reporting.py
+   └─ Compare results with article tables
+   └─ Document findings
+
+
+═══════════════════════════════════════════════════════════════════════════════
+                                  STATUS
+═══════════════════════════════════════════════════════════════════════════════
+
+✅ Planning Phase: COMPLETE
+   • All metrics specified
+   • Implementation roadmap created
+   • Code examples provided
+   • Timeline established
+
+⬜ Implementation Phase: NOT STARTED
+   • Awaiting team review
+   • Ready to begin Phase 0
+   
+Next Actions:
+1. Review planning documents with advisor/team
+2. Approve MVP scope (Phases 1-2)
+3. Begin Phase 0: Environment setup
+4. Start implementing NLL metrics
+
+═══════════════════════════════════════════════════════════════════════════════
