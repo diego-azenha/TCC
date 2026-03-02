@@ -318,12 +318,39 @@ def compute_var_metrics(model, dataloader, dataset, num_samples, mode, returns_s
             r = r.to(device)
             mask = mask.to(device)
             
-            # Get predictions
-            pred_output = model.model.predict(S, S_static, num_samples=num_samples)
-            r_samples = pred_output['r_samples']  # [batch=1, N, K]
+            # Note: predict method has a bug - it expects batched inputs but calls embedder which doesn't support batches
+            # Workaround: manually call embedder with squeezed inputs and sample from prior
+            S_no_batch = S.squeeze(0)  # [N, L, d_ts]
+            S_static_no_batch = S_static.squeeze(0)  # [N, d_static]
             
-            # Remove batch dimension and move to CPU
+            # Get factor model parameters (embedder expects no batch dim)
+            alpha, B, sigma, nu = model.model.embedder(S_no_batch, S_static_no_batch)  # Each: [N, ...] or [N, F]
+            
+            N = alpha.shape[0]
+            F = B.shape[1] if len(B.shape) > 1 else 1
+            
+            # Sample from prior
+            z = model.model.prior.sample(batch_size=1, num_samples=num_samples, device=S.device)  # [1, K, F]
+            
+            # We need to call sample_r_given_z with matching batch dimensions
+            # Simplest approach: reshape z to [K, 1, F] and params to [K, N] treating each sample as a batch
+            # But that won't work either. Let's use the proper path:
+            # z: [1, K, F] - keep as is
+            # params: broadcast from [N] to match the batch=1 in z
+            
+            # Add batch dimension to make everything [1, N, ...] 
+            alpha_batch = alpha.unsqueeze(0)  # [1, N]
+            B_batch = B.unsqueeze(0)  # [1, N, F]
+            sigma_batch = sigma.unsqueeze(0)  # [1, N]
+            nu_batch = nu.unsqueeze(0)  # [1, N]
+            
+            # Sample returns r|z using decoder - it will broadcast internally
+            from src.models import decoder as dec
+            r_samples = dec.sample_r_given_z(alpha_batch, B_batch, sigma_batch, nu_batch, z)  # [1, N, K]
+            
+            # Remove batch dimension: [1, N, K] -> [N, K]
             r_samples = r_samples[0].cpu().numpy()  # [N, K]
+            
             r_actual = r[0].cpu().numpy()  # [N]
             mask_np = mask[0].cpu().numpy()  # [N]
             
@@ -341,9 +368,6 @@ def compute_var_metrics(model, dataloader, dataset, num_samples, mode, returns_s
     # Stack all data
     predictions = np.concatenate(all_predictions, axis=0)  # [N_total, K]
     actuals = np.concatenate(all_actuals)  # [N_total]
-    
-    print(f"\nTotal observations: {len(actuals)}")
-    print(f"Predictions shape: {predictions.shape}")
     
     # Compute calibration for each quantile
     results = []
@@ -483,8 +507,11 @@ def compute_covariance_metrics(model, dataloader, dataset, mode, returns_std, de
             mu_z, Sigma_z = model.model.prior.to_normal_params()
             
             # Compute predicted covariance
-            cov_pred = decoder.marginal_covariance(B[0], Sigma_z, sigma[0])  # [N, N]
-            cov_pred = cov_pred.cpu().numpy() * (returns_std ** 2)
+            cov_pred = decoder.marginal_covariance(B[0], Sigma_z, sigma[0])  # [N, N] or might be [1, N, N]
+            # Remove batch dimension if present
+            if cov_pred.dim() == 3:
+                cov_pred = cov_pred[0]
+            cov_pred = cov_pred.cpu().numpy() * (returns_std ** 2)  # Now [N, N]
             
             # Compute empirical covariance from rolling window
             recent_returns = returns_history[-window_size:]
@@ -516,11 +543,15 @@ def compute_covariance_metrics(model, dataloader, dataset, mode, returns_std, de
             
             # Compute empirical covariance
             try:
-                cov_emp = np.cov(returns_matrix, rowvar=False)  # [N_valid, N_valid]
+                cov_emp = np.cov(returns_matrix, rowvar=False)  # [N_final, N_final]
                 
                 # Extract corresponding predicted covariance
-                valid_indices = np.where(valid_now)[0][valid_cols]
-                cov_pred_sub = cov_pred[np.ix_(valid_indices, valid_indices)]
+                # valid_now gives us which stocks are valid now (boolean)
+                # valid_cols tells us which of those valid stocks have data in window (boolean)
+                # We need to get the actual stock indices
+                all_valid_indices = np.where(valid_now)[0]  # indices of stocks valid now
+                final_valid_indices = all_valid_indices[valid_cols]  # filter by those with window data
+                cov_pred_sub = cov_pred[np.ix_(final_valid_indices, final_valid_indices)]
                 
                 # Compute MSE
                 mse = np.mean((cov_pred_sub - cov_emp) ** 2)
@@ -731,17 +762,21 @@ def compute_portfolio_metrics(model, dataset, returns_std, mode, device, output_
             mask = mask.unsqueeze(0).to(device)
             
             # Get model predictions
-            enc_output = model.model.encode(S, S_static, r, mask)
-            alpha = enc_output['alpha']  # [1, N]
-            B = enc_output['B']  # [1, N, F]
-            sigma = enc_output['sigma']  # [1, N]
+            # encode returns tuple: (alpha, B, sigma, nu, mu_q, L_q)
+            alpha, B, sigma, nu, mu_q, L_q = model.model.encode(S, S_static, r, mask)
             
             # Get prior parameters
             mu_z, Sigma_z = model.model.prior.to_normal_params()
             
             # Compute expected returns and covariance
-            r_mean = decoder.marginal_mean(alpha[0], B[0], mu_z)  # [N]
-            r_cov = decoder.marginal_covariance(B[0], Sigma_z, sigma[0])  # [N, N]
+            r_mean = decoder.marginal_mean(alpha[0], B[0], mu_z)  # Returns [1, N] even with [N] input
+            r_cov = decoder.marginal_covariance(B[0], Sigma_z, sigma[0])  # Returns [1, N, N] or [N, N]
+            
+            # Remove batch dimension if present
+            if r_mean.dim() == 2:
+                r_mean = r_mean[0]  # [1, N] -> [N]
+            if r_cov.dim() == 3:
+                r_cov = r_cov[0]  # [1, N, N] -> [N, N]
             
             # Move to CPU and denormalize
             r_mean = r_mean.cpu().numpy() * returns_std
