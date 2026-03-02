@@ -536,14 +536,119 @@ This ensures:
 
 ---
 
-## Evaluation [WIP]
+## Evaluation [DONE]
 
-**Not yet implemented**. Planned metrics:
+Quantitative evaluation system implemented in `scripts/test.py`. Computes all paper metrics on test set.
 
-- Negative log-likelihood (joint and individual)
-- Covariance forecasting (MSE, Box's M test)
-- Value-at-Risk (VaR) calibration
-- Portfolio optimization (Sharpe ratio)
+### Quick Start
+
+**Debug mode** (fast, first 50 dates):
+```bash
+python scripts/test.py --checkpoint checkpoints/neuralfactors/last.ckpt --mode debug
+```
+
+**Full evaluation** (paper mode, all test dates):
+```bash
+python scripts/test.py --checkpoint checkpoints/neuralfactors/last.ckpt --mode paper
+```
+
+**Custom configuration**:
+```bash
+python scripts/test.py \
+  --checkpoint checkpoints/neuralfactors/last.ckpt \
+  --data_dir data \
+  --output_dir results/evaluation \
+  --experiment_name neuralfactors \
+  --split test \
+  --mode paper \
+  --num_samples 100 \
+  --seed 42
+```
+
+### Implemented Metrics
+
+**1. Negative Log-Likelihood (NLL)**
+- `NLL_joint`: Joint negative log-likelihood across all stocks per date
+- `NLL_ind`: Per-stock average NLL
+- Computed using IWAE loss with importance sampling
+- Output: `results/evaluation/neuralfactors/metrics/nll_timeseries.csv`
+- Plot: `results/evaluation/neuralfactors/plots/nll_timeseries.png`
+
+**2. Covariance Prediction**
+- Compares predicted covariance vs empirical (20-day rolling window)
+- Metric: Mean Squared Error (MSE) between matrices
+- Uses marginal covariance from decoder
+- Output: `results/evaluation/neuralfactors/metrics/cov_metrics.csv`
+- Plot: `results/evaluation/neuralfactors/plots/cov_mse_timeseries.png`
+
+**3. Value-at-Risk (VaR) Calibration**
+- Tests calibration at quantiles [0.01, 0.05, 0.10]
+- Compares theoretical vs empirical violation rates
+- Uses model predictions with 1000 samples (paper mode)
+- Output: `results/evaluation/neuralfactors/metrics/var_calibration.csv`
+- Plot: `results/evaluation/neuralfactors/plots/var_calibration.png`
+
+**4. Portfolio Backtest**
+- Min-variance portfolio optimization using predicted covariance
+- Compares against Ibovespa benchmark (if available)
+- Metrics: total return, annualized return/vol, Sharpe ratio, max drawdown
+- Output: `results/evaluation/neuralfactors/timeseries/backtest_returns.csv`
+- Metrics: `results/evaluation/neuralfactors/metrics/backtest_metrics.json`
+- Plot: `results/evaluation/neuralfactors/plots/cumulative_returns.png`
+
+**5. Summary Report**
+- Aggregated statistics from all metrics
+- Human-readable text format
+- Output: `results/evaluation/neuralfactors/evaluation_summary.txt`
+
+### Output Structure
+
+```
+results/
+└── evaluation/
+    └── neuralfactors/
+        ├── metrics/
+        │   ├── nll_timeseries.csv        # NLL per date
+        │   ├── cov_metrics.csv           # Covariance MSE per date
+        │   ├── var_calibration.csv       # VaR calibration table
+        │   └── backtest_metrics.json     # Portfolio performance
+        ├── timeseries/
+        │   └── backtest_returns.csv      # Daily portfolio returns
+        ├── plots/
+        │   ├── nll_timeseries.png        # NLL and KL over time
+        │   ├── cov_mse_timeseries.png    # Covariance error over time
+        │   ├── var_calibration.png       # VaR calibration scatter
+        │   └── cumulative_returns.png    # Portfolio vs benchmark
+        └── evaluation_summary.txt        # Complete metrics report
+```
+
+### Modes
+
+**Debug Mode** (`--mode debug`):
+- Processes first 50 dates only
+- NLL samples: 10
+- VaR samples: 100
+- Runtime: ~5-10 minutes
+- Use for: Quick testing, development, debugging
+
+**Paper Mode** (`--mode paper`):
+- Processes all test dates
+- NLL samples: 100
+- VaR samples: 1000
+- Runtime: ~30-60 minutes (depends on test set size)
+- Use for: Final evaluation, paper results, benchmarking
+
+### Expected Results
+
+**Good calibration**:
+- VaR error < 0.02 (excellent), < 0.05 (good)
+- Covariance MSE should be small and stable
+- NLL should be finite and consistent across dates
+
+**Strong portfolio performance**:
+- Sharpe ratio > 1.0 (good), > 2.0 (excellent)
+- Positive excess return vs benchmark
+- Information ratio > 0.5 indicates consistent alpha
 
 ---
 
@@ -577,8 +682,13 @@ Gopal, A. (2024). NeuralFactors: A Novel Factor Learning Approach to Generative 
 - [DONE] Polyak averaging
 - [DONE] Training script with CLI
 
-**Phase 3: Evaluation** [TODO]
-- Metrics implementation (NLL_ind, covariance forecasting, VaR)
-- Baseline comparisons (PPCA, BDG, GARCH)
-- Ablation studies
-- Test script
+**Phase 3: Evaluation** [DONE]
+- [DONE] NLL metrics (joint and individual)
+- [DONE] Covariance forecasting (MSE)
+- [DONE] VaR calibration (quantile violations)
+- [DONE] Portfolio backtest (min-variance)
+- [DONE] Benchmark comparison (Ibovespa)
+- [DONE] Summary report generation
+- [DONE] Test script with CLI (`scripts/test.py`)
+- [TODO] Baseline comparisons (PPCA, BDG, GARCH)
+- [TODO] Ablation studies

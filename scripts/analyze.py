@@ -39,7 +39,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Analyze trained NeuralFactors model")
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to checkpoint file")
     parser.add_argument("--data_dir", type=str, default="data", help="Data directory")
-    parser.add_argument("--output_dir", type=str, default="src/evaluation/train", help="Output directory for plots")
+    parser.add_argument("--output_dir", type=str, default="results/training_analysis", help="Output directory for plots")
     parser.add_argument("--split", type=str, default="test", choices=["train", "val", "test"], help="Dataset split")
     parser.add_argument("--num_samples", type=int, default=1000, help="Number of samples for predictions")
     return parser.parse_args()

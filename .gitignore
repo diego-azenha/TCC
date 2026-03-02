@@ -1,1 +1,26 @@
 /.venv
+
+# Evaluation outputs
+results/
+results_analysis/
+results_5epochs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Jupyter
+.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

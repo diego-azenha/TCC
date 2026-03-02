@@ -319,8 +319,8 @@ def main():
         try:
             import subprocess
             
-            # Save to src/evaluation/train/
-            analysis_dir = Path("src") / "evaluation" / "train" / args.experiment_name
+            # Save to results/training_analysis/
+            analysis_dir = Path("results") / "training_analysis" / args.experiment_name
             analysis_dir.mkdir(parents=True, exist_ok=True)
             
             # Run analyze.py script
