@@ -1,5 +1,7 @@
 /.venv
 
+NEURALFACTORSARTICLE.TXT
+
 # Python
 __pycache__/
 *.py[cod]
