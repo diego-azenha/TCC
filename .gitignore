@@ -1,10 +1,5 @@
 /.venv
 
-# Evaluation outputs
-results/
-results_analysis/
-results_5epochs/
-
 # Python
 __pycache__/
 *.py[cod]
