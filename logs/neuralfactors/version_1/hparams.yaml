@@ -27,11 +27,11 @@ training_config: !!python/object:src.utils.config.TrainingConfig
   device: cuda
   learning_rate: 0.0001
   log_dir: logs
-  max_steps: 17290
+  max_steps: 250000
   normalize_returns: true
   num_iwae_samples: 20
   polyak_alpha: 0.999
-  polyak_start_step: 8645
+  polyak_start_step: 125000
   returns_std: !!python/object/apply:numpy._core.multiarray.scalar
   - !!python/object/apply:numpy.dtype
     args:
@@ -51,5 +51,5 @@ training_config: !!python/object:src.utils.config.TrainingConfig
     xPnTkI8LsD8=
   seed: 42
   use_polyak: true
-  val_every_n_steps: 10000
+  val_every_n_steps: 100000
   weight_decay: 1.0e-06

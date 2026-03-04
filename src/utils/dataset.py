@@ -130,8 +130,53 @@ class NeuralFactorsDataset(Dataset):
         
         # Get unique dates in this split (these are the samples)
         self.dates = sorted(self.returns_df['date'].unique())
+
+        # ── PRE-INDEX: evita filtragem linear no __getitem__ ─────────────────
+
+        # ts: agrupa por ticker, ordena por date, extrai arrays numpy
+        # _ts_grouped é temporário — liberado após extrair datas e valores
+        _ts_grouped = {
+            ticker: grp.sort_values('date').reset_index(drop=True)
+            for ticker, grp in self.df_ts_full.groupby('ticker')
+        }
+        # ticker -> array de datas (para searchsorted O(log N))
+        self._ts_dates_cache: dict = {
+            ticker: df['date'].values
+            for ticker, df in _ts_grouped.items()
+        }
+        # ticker -> array float32 de features (sem cópia extra no __getitem__)
+        self._ts_values_cache: dict = {
+            ticker: df[self.ts_feature_cols].values.astype(np.float32)
+            for ticker, df in _ts_grouped.items()
+        }
+        del _ts_grouped  # libera memória intermediária
+
+        # static: set_index vetorizado → zip(keys, rows) sem iterrows()
+        _static_indexed = (
+            self.df_static_full
+            .set_index(['ticker', 'date'])[self.static_feature_cols]
+            .astype(np.float32)
+        )
+        # {(ticker, date): np.array([f1, f2, ...])} — sem loop Python por linha
+        self._static_cache: dict = dict(
+            zip(list(_static_indexed.index), _static_indexed.values)
+        )
+        del _static_indexed
+
+        # returns: pivot vetorizado → iterrows() sobre N_datas (~3458) apenas
+        _returns_pivot = self.returns_df.pivot(
+            index='date', columns='ticker', values='return'
+        )
+        # {date: {ticker: return_value}} — NaN descartados por dropna()
+        self._returns_cache: dict = {
+            date: row.dropna().to_dict()
+            for date, row in _returns_pivot.iterrows()
+        }
+        del _returns_pivot
+        # ─────────────────────────────────────────────────────────────────────
+
         print(f"Dataset {split}: {len(self.dates)} trading days, d_ts={self.d_ts}, d_static={self.d_static}")
-    
+
     def __len__(self) -> int:
         """Number of trading days in split."""
         return len(self.dates)
@@ -149,59 +194,44 @@ class NeuralFactorsDataset(Dataset):
             mask: [N] boolean mask (True = valid stock)
         """
         target_date = self.dates[idx]
-        
-        # Get returns for this date (next-day returns)
-        returns_day = self.returns_df[self.returns_df['date'] == target_date]
-        tickers = returns_day['ticker'].tolist()
+
+        # O(1) dict lookup em vez de filtrar o DataFrame inteiro
+        ticker_returns = self._returns_cache.get(target_date, {})
+        tickers = list(ticker_returns.keys())
         N = len(tickers)
-        
+
         # Initialize tensors
         S = torch.zeros(N, self.lookback, self.d_ts, dtype=torch.float32)
         S_static = torch.zeros(N, self.d_static, dtype=torch.float32)
         r = torch.zeros(N, dtype=torch.float32)
         mask = torch.zeros(N, dtype=torch.bool)
-        
-        # For each stock, build lookback window
+
         for i, ticker in enumerate(tickers):
-            # Get return value
-            r_value = returns_day[returns_day['ticker'] == ticker]['return'].values
-            if len(r_value) > 0 and not np.isnan(r_value[0]):
-                r[i] = r_value[0]
-            else:
-                continue  # Skip invalid return
-            
-            # Get time-series features up to (and including) target_date
-            ts_history = self.df_ts_full[
-                (self.df_ts_full['ticker'] == ticker) &
-                (self.df_ts_full['date'] <= target_date)
-            ].sort_values('date')
-            
-            # Need at least lookback days
-            if len(ts_history) < self.lookback:
-                continue  # Skip if insufficient history
-            
-            # Get last lookback rows
-            ts_window = ts_history.iloc[-self.lookback:]
-            
-            # Fill NaN with 0 (safe for normalized features)
-            ts_values = ts_window[self.ts_feature_cols].fillna(0).values
-            S[i] = torch.tensor(ts_values, dtype=torch.float32)
-            
-            # Get static features for this date
-            static_features = self.df_static_full[
-                (self.df_static_full['ticker'] == ticker) &
-                (self.df_static_full['date'] == target_date)
-            ]
-            
-            if len(static_features) > 0:
-                # Fill NaN with 0 for static features too
-                static_values = static_features[self.static_feature_cols].fillna(0).values[0]
-                S_static[i] = torch.tensor(
-                    static_values,
-                    dtype=torch.float32
-                )
-                mask[i] = True  # Valid stock
-        
+            # O(1) return lookup
+            r_value = ticker_returns[ticker]
+            if np.isnan(r_value):
+                continue
+            r[i] = r_value
+
+            # O(1) ts lookup + O(log N) searchsorted por data
+            dates_arr = self._ts_dates_cache.get(ticker)
+            values_arr = self._ts_values_cache.get(ticker)
+            if dates_arr is None:
+                continue
+
+            end_idx = int(np.searchsorted(dates_arr, target_date, side='right'))
+            if end_idx < self.lookback:
+                continue
+
+            ts_values = values_arr[end_idx - self.lookback: end_idx]
+            S[i] = torch.from_numpy(np.nan_to_num(ts_values))
+
+            # O(1) static lookup
+            static_values = self._static_cache.get((ticker, target_date))
+            if static_values is not None:
+                S_static[i] = torch.from_numpy(np.nan_to_num(static_values))
+                mask[i] = True
+
         return S, S_static, r, mask
 
 

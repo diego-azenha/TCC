@@ -69,7 +69,7 @@ def parse_args():
     parser.add_argument("--num_iwae_samples", type=int, default=20, help="k in IWAE loss")
     parser.add_argument("--max_steps", type=int, default=172_900, help="50 epochs (~48 hours)")
     parser.add_argument("--val_every_n_steps", type=int, default=100_000, help="Validate only at the end")
-    parser.add_argument("--polyak_start_step", type=int, default=86_450, help="Polyak averaging start (halfway)")
+    parser.add_argument("--polyak_start_step", type=int, default=None, help="Polyak averaging start (default: max_steps // 2)")
     parser.add_argument("--polyak_alpha", type=float, default=0.999, help="Polyak EMA decay")
     
     # Data split dates (adjusted for IBX data 2005-2025)
@@ -94,6 +94,13 @@ def parse_args():
 def main():
     """Main training function."""
     args = parse_args()
+
+    # Auto-compute polyak_start_step if not explicitly provided
+    if args.polyak_start_step is None:
+        args.polyak_start_step = args.max_steps // 2
+
+    # Optimize Tensor Core usage on RTX 3060
+    torch.set_float32_matmul_precision('medium')
     
     # Set random seed
     pl.seed_everything(args.seed)
@@ -206,20 +213,22 @@ def main():
         train_dataset,
         batch_size=1,
         shuffle=True,
-        num_workers=11,  # Parallel data loading for better performance
+        num_workers=4,  # Parallel data loading for better performance
         collate_fn=collate_fn,
         pin_memory=True if args.gpus > 0 else False,
-        persistent_workers=True,  # Keep workers alive between epochs
+        persistent_workers=True,  # Keep workers alive between epochs,
+        prefetch_factor=2,  # Prefetch batches for smoother training
     )
     
     val_loader = DataLoader(
         val_dataset,
         batch_size=1,
         shuffle=False,
-        num_workers=11,  # Parallel data loading for better performance
+        num_workers=2,  # Parallel data loading for better performance
         collate_fn=collate_fn,
         pin_memory=True if args.gpus > 0 else False,
         persistent_workers=True,  # Keep workers alive between epochs
+        prefetch_factor=2,  # Prefetch batches for smoother training
     )
     
     print(f"\nDataLoaders created:")
@@ -280,6 +289,7 @@ def main():
         max_epochs=-1,  # Unlimited epochs - only stop when max_steps is reached
         accelerator=accelerator,
         devices=devices,
+        precision='16-mixed',  # Use mixed precision for faster training and lower memory usage
         callbacks=[checkpoint_callback, lr_monitor],
         logger=logger,
         log_every_n_steps=100,
@@ -326,7 +336,7 @@ def main():
             # Run analyze.py script
             analyze_cmd = [
                 sys.executable,
-                str(Path(__file__).parent / "analyze.py"),
+                str(Path(__file__).parent.parent / "src" / "analysis" / "analyze.py"),
                 "--checkpoint", checkpoint_callback.best_model_path,
                 "--data_dir", args.data_dir,
                 "--output_dir", str(analysis_dir),

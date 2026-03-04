@@ -1,0 +1,189 @@
+================================================================================
+NEURALFACTORS — GUIA DE EXECUÇÃO
+================================================================================
+
+Todos os comandos devem ser rodados a partir da raiz do projeto:
+  M:\Python Projects\TCC (new)
+
+Ativar o ambiente virtual antes de rodar qualquer script:
+  .venv\Scripts\Activate.ps1
+
+
+================================================================================
+1. TREINAMENTO  (scripts/train.py)
+================================================================================
+
+COMANDO BASE
+------------
+  python scripts/train.py [opções]
+
+────────────────────────────────────────
+ RECEITAS PRONTAS
+────────────────────────────────────────
+
+# Verificar se o código não quebra (1 batch, ~segundos)
+python scripts/train.py --fast_dev_run
+
+# Debug rápido (~minutos)
+python scripts/train.py `
+    --max_steps 500 `
+    --num_iwae_samples 1 `
+    --lookback 32 `
+    --experiment_name neuralfactors_debug
+
+# Treino padrão completo (~48h na RTX 3060)
+python scripts/train.py
+
+# Treino mais longo (mais épocas)
+python scripts/train.py `
+    --max_steps 250000 `
+    --experiment_name neuralfactors_long
+
+# Treino com experimento renomeado (não sobrescreve checkpoints anteriores)
+python scripts/train.py --experiment_name neuralfactors_v2
+
+────────────────────────────────────────
+ TODOS OS PARÂMETROS DISPONÍVEIS
+────────────────────────────────────────
+
+-- CAMINHOS DE DADOS --
+  --data_dir              DIR     Diretório raiz dos dados          [default: data]
+  --x_ts_file             PATH    Parquet de features time-series   [default: parquets/x_ts.parquet]
+  --x_static_file         PATH    Parquet de features estáticas     [default: parquets/x_static.parquet]
+  --prices_file           PATH    CSV de preços                     [default: cleaned/fechamentos_ibx.csv]
+
+-- ARQUITETURA DO MODELO --
+  --num_factors           INT     Nº de fatores latentes (F)        [default: 64]
+  --hidden_size           INT     Dimensão oculta (h)               [default: 256]
+  --lookback              INT     Janela de lookback (L dias)       [default: 256]
+  --dropout               FLOAT   Taxa de dropout                   [default: 0.25]
+
+-- HIPERPARÂMETROS DE TREINO --
+  --learning_rate         FLOAT   Taxa de aprendizado (Adam)        [default: 1e-4]
+  --weight_decay          FLOAT   Regularização L2                  [default: 1e-6]
+  --num_iwae_samples      INT     Amostras Monte Carlo CIWAE (k)    [default: 20]
+  --max_steps             INT     Total de gradient steps            [default: 172900  (~50 épocas)]
+  --polyak_start_step     INT     Step para início do Polyak EMA    [default: max_steps // 2, automático]
+  --polyak_alpha          FLOAT   Decaimento EMA do Polyak          [default: 0.999]
+  --val_every_n_steps     INT     Frequência de validação (steps)   [default: 100000]
+
+-- SPLITS DE DATA --
+  --train_end             DATE    Fim do período de treino          [default: 2018-12-31]
+  --val_end               DATE    Fim do período de validação       [default: 2022-12-31]
+  (dados após val_end formam o conjunto de teste)
+
+-- CHECKPOINTS E LOGS --
+  --checkpoint_dir        DIR     Diretório para checkpoints        [default: checkpoints]
+  --log_dir               DIR     Diretório para logs TensorBoard   [default: logs]
+  --experiment_name       STR     Nome do experimento               [default: neuralfactors]
+
+-- DISPOSITIVO E REPRODUTIBILIDADE --
+  --seed                  INT     Semente aleatória                 [default: 42]
+  --gpus                  INT     Número de GPUs (0 = usar CPU)     [default: 1]
+
+-- DEBUG --
+  --fast_dev_run          FLAG    Roda 1 batch e encerra (sem args adicionais)
+
+────────────────────────────────────────
+ IMPACTO DOS PARÂMETROS NA VELOCIDADE
+────────────────────────────────────────
+
+Parâmetro           Reduzir acelera?   Observação
+--max_steps         ✓ Muito            Principal controlador de duração total
+--num_iwae_samples  ✓ Muito            Reduz custo por step; piora gradiente
+--lookback          ✓ Moderado         Reduz custo do Transformer (attention)
+--hidden_size       ✓ Moderado         Reduz tamanho do modelo
+--num_factors       ✓ Leve             Reduz dimensão latente
+
+Parâmetro           Nota sobre consistência
+--polyak_start_step Calculado automaticamente como max_steps // 2; só informar se quiser valor diferente
+
+
+================================================================================
+2. AVALIAÇÃO / TESTE  (scripts/test.py)
+================================================================================
+
+COMANDO BASE
+------------
+  python scripts/test.py --checkpoint CAMINHO_CHECKPOINT [opções]
+
+────────────────────────────────────────
+ RECEITAS PRONTAS
+────────────────────────────────────────
+
+# Avaliação rápida para debug (50 datas, amostras reduzidas)
+python scripts/test.py `
+    --checkpoint checkpoints/neuralfactors/last.ckpt `
+    --mode debug
+
+# Avaliação completa (modo paper, todas as datas)
+python scripts/test.py `
+    --checkpoint checkpoints/neuralfactors/last.ckpt `
+    --mode paper
+
+# Avaliar no conjunto de validação em vez do teste
+python scripts/test.py `
+    --checkpoint checkpoints/neuralfactors/last.ckpt `
+    --mode paper `
+    --split val
+
+# Salvar resultados em diretório customizado
+python scripts/test.py `
+    --checkpoint checkpoints/neuralfactors/last.ckpt `
+    --mode paper `
+    --output_dir results/evaluation_v2 `
+    --experiment_name neuralfactors_v2
+
+────────────────────────────────────────
+ TODOS OS PARÂMETROS DISPONÍVEIS
+────────────────────────────────────────
+
+  --checkpoint      PATH    (OBRIGATÓRIO) Caminho para o .ckpt treinado
+  --data_dir        DIR     Diretório raiz dos dados                   [default: data]
+  --output_dir      DIR     Diretório para salvar resultados           [default: results/evaluation]
+  --experiment_name STR     Subpasta de organização dos resultados     [default: neuralfactors]
+  --split           STR     Split a avaliar: train | val | test        [default: test]
+  --num_samples     INT     Amostras NLL (sobrescrito pelo --mode)     [default: 100]
+  --seed            INT     Semente aleatória                          [default: 42]
+  --mode            STR     Modo de avaliação:
+                              debug → 50 datas, NLL k=10, VaR k=100
+                              paper → todas as datas, NLL k=100, VaR k=1000
+
+────────────────────────────────────────
+ MÉTRICAS GERADAS
+────────────────────────────────────────
+
+  NLL (Negative Log-Likelihood)   → results/.../metrics/nll_timeseries.csv
+  Covariance MSE                  → results/.../metrics/cov_metrics.csv
+  VaR Calibration                 → results/.../metrics/var_calibration.csv
+  Portfolio Backtest              → results/.../timeseries/backtest_returns.csv
+  Resumo geral                    → results/.../evaluation_summary.txt
+  Gráficos                        → results/.../plots/
+
+
+================================================================================
+3. VISUALIZAR LOGS DE TREINO (TensorBoard)
+================================================================================
+
+  tensorboard --logdir logs/
+
+
+================================================================================
+4. CHECKPOINT DE REFERÊNCIA (treino atual)
+================================================================================
+
+  Localização:  checkpoints/neuralfactors/
+  Config salva: checkpoints/neuralfactors/config.json
+  Último ckpt:  checkpoints/neuralfactors/last.ckpt
+
+  Parâmetros usados no treino atual:
+    max_steps        = 172900
+    num_iwae_samples = 20
+    hidden_size      = 256
+    num_factors      = 64
+    lookback         = 256
+    train_end        = 2018-12-31
+    val_end          = 2022-12-31
+    returns_std      = 0.0626764...
+
+================================================================================
