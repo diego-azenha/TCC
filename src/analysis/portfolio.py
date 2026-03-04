@@ -150,12 +150,24 @@ def compute_portfolio_metrics(model, dataset, returns_std, mode, device, output_
 
             r_next_np = r_next.numpy() * returns_std
             mask_next_np = mask_next.numpy().astype(bool)
-            valid_both = mask_np & mask_next_np
 
-            if valid_both.sum() > 0:
-                w_both = weights[valid_both]
+            # Ticker-level alignment to handle variable IBX universe size across days
+            date_today = dataset.dates[idx]
+            date_next = dataset.dates[idx + 1]
+            tickers_today = list(dataset._returns_cache.get(date_today, {}).keys())
+            tickers_next  = list(dataset._returns_cache.get(date_next,  {}).keys())
+            today_to_idx = {t: i for i, t in enumerate(tickers_today)}
+            next_to_idx  = {t: i for i, t in enumerate(tickers_next)}
+            valid_today_set = {t for i, t in enumerate(tickers_today) if i < len(mask_np)      and mask_np[i]}
+            valid_next_set  = {t for i, t in enumerate(tickers_next)  if i < len(mask_next_np) and mask_next_np[i]}
+            common = sorted(valid_today_set & valid_next_set)
+
+            if len(common) > 0:
+                today_idx = [today_to_idx[t] for t in common]
+                next_idx  = [next_to_idx[t]  for t in common]
+                w_both = weights[today_idx]
                 w_both = w_both / w_both.sum() if w_both.sum() > 0 else w_both
-                port_return = np.dot(w_both, r_next_np[valid_both])
+                port_return = np.dot(w_both, r_next_np[next_idx])
                 portfolio_returns.append(port_return)
                 dates.append(dataset.dates[idx + 1])
 

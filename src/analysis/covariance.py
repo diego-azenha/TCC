@@ -34,7 +34,7 @@ def compute_covariance_metrics(model, dataloader, dataset, mode, returns_std, de
         print(f"Debug mode: Processing first {max_dates} dates")
 
     results = []
-    returns_history = []
+    returns_history = []  # list of {ticker: return_value} dicts (already denormalized)
     model.eval()
 
     with torch.no_grad():
@@ -48,14 +48,26 @@ def compute_covariance_metrics(model, dataloader, dataset, mode, returns_std, de
             r = r.to(device)
             mask = mask.to(device)
 
-            r_np = r[0].cpu().numpy() * returns_std
+            r_np   = r[0].cpu().numpy() * returns_std
             mask_np = mask[0].cpu().numpy().astype(bool)
-            returns_history.append((r_np, mask_np))
+
+            # Get ticker ordering for this day from dataset cache
+            date = dataset.dates[idx]
+            ticker_returns_today = dataset._returns_cache.get(date, {})
+            tickers_today = list(ticker_returns_today.keys())
+
+            # Store {ticker: return} only for valid stocks
+            day_dict = {
+                t: float(r_np[i])
+                for i, t in enumerate(tickers_today)
+                if i < len(mask_np) and mask_np[i]
+            }
+            returns_history.append((date, day_dict, tickers_today))
 
             if len(returns_history) <= window_size:
                 continue
 
-            # Predicted covariance
+            # Predicted covariance for today's universe
             alpha, B, sigma, nu, mu_q, L_q = model.model.encode(S, S_static, r, mask)
             mu_z, Sigma_z = model.model.prior.to_normal_params()
             cov_pred = decoder.marginal_covariance(B[0], Sigma_z, sigma[0])
@@ -63,39 +75,48 @@ def compute_covariance_metrics(model, dataloader, dataset, mode, returns_std, de
                 cov_pred = cov_pred[0]
             cov_pred = cov_pred.cpu().numpy() * (returns_std ** 2)
 
-            # Empirical covariance from rolling window
-            valid_now = mask_np
-            n_stocks = valid_now.sum()
-            if n_stocks < 2:
+            # Find common tickers across the rolling window (by ticker identity)
+            window = returns_history[-window_size:]
+            common_tickers = set(window[0][1].keys())
+            for _, hist_dict, _ in window[1:]:
+                common_tickers &= set(hist_dict.keys())
+            common_tickers = sorted(common_tickers)
+
+            if len(common_tickers) < 2:
                 continue
 
-            returns_matrix = []
-            for r_hist, mask_hist in returns_history[-window_size:]:
-                valid_both = valid_now & mask_hist
-                r_valid = np.where(valid_both, r_hist, np.nan)
-                returns_matrix.append(r_valid[valid_now])
+            # Build returns matrix [window_size, n_common]
+            returns_matrix = np.array([
+                [hist_dict.get(t, np.nan) for t in common_tickers]
+                for _, hist_dict, _ in window
+            ])
 
-            returns_matrix = np.array(returns_matrix)
             valid_cols = ~np.isnan(returns_matrix).any(axis=0)
             if valid_cols.sum() < 2:
                 continue
 
             returns_matrix = returns_matrix[:, valid_cols]
+            final_tickers = [common_tickers[i] for i in range(len(common_tickers)) if valid_cols[i]]
+
+            # Map final_tickers back to indices in today's batch (for cov_pred)
+            ticker_to_idx = {t: i for i, t in enumerate(tickers_today)}
+            pred_idx = [ticker_to_idx[t] for t in final_tickers if t in ticker_to_idx]
+
+            if len(pred_idx) < 2:
+                continue
 
             try:
                 cov_emp = np.cov(returns_matrix, rowvar=False)
-                all_valid_idx = np.where(valid_now)[0]
-                final_idx = all_valid_idx[valid_cols]
-                cov_pred_sub = cov_pred[np.ix_(final_idx, final_idx)]
+                cov_pred_sub = cov_pred[np.ix_(pred_idx, pred_idx)]
                 mse = np.mean((cov_pred_sub - cov_emp) ** 2)
 
                 results.append({
-                    'date': dataset.dates[idx],
+                    'date': date,
                     'mse_cov': mse,
-                    'n_stocks': returns_matrix.shape[1],
+                    'n_stocks': len(pred_idx),
                 })
             except Exception as e:
-                print(f"\nWarning at {dataset.dates[idx]}: {e}")
+                print(f"\nWarning at {date}: {e}")
 
     df = pd.DataFrame(results)
     if len(df) > 0:
