@@ -2,6 +2,9 @@
 
 NEURALFACTORSARTICLE.TXT
 
+/checkpoints
+/logs
+
 # Python
 __pycache__/
 *.py[cod]
