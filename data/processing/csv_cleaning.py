@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import pandas as pd
 
 # Define the input and output directories
@@ -98,6 +99,66 @@ def clean_and_save_quarterly_csv(file_name):
     except Exception as e:
         print(f"An error occurred while processing {file_name}: {e}")
 
+# =============================================================================
+# Economatica index xlsx cleaning (IBX, Ibovespa)
+# =============================================================================
+
+# Resolve paths relative to this script so the function works on any machine
+_THIS_DIR   = Path(__file__).resolve().parent          # data/processing/
+_RAW_DAILY  = _THIS_DIR.parent / "_raw_data" / "daily"
+_CLEANED    = _THIS_DIR.parent / "cleaned"
+
+
+def clean_economatica_xlsx(filename: str, sheet_name: str, output_name: str) -> None:
+    """Clean a single-series Economatica xlsx (IBX, Ibovespa layout).
+
+    Expected layout
+    ---------------
+    Rows 1–3 : metadata / blank  →  skipped via header=3
+    Row 4    : column headers    →  renamed to 'date' and 'price'
+    Data rows: date  |  closing price (string; '-' on non-trading days)
+
+    Output
+    ------
+    CSV saved to data/cleaned/<output_name> with columns: date, return
+    (daily pct_change of price; first row dropped because return is NaN).
+    """
+    input_path  = _RAW_DAILY / filename
+    output_path = _CLEANED   / output_name
+
+    if not input_path.exists():
+        print(f"Skipping {filename}: file not found at {input_path}")
+        return
+
+    try:
+        df = pd.read_excel(input_path, sheet_name=sheet_name, header=3)
+
+        # Keep only the first two columns and rename them
+        df = df.iloc[:, :2].copy()
+        df.columns = ["date", "price"]
+
+        # Drop non-trading day rows (price stored as the string '-')
+        df = df[df["price"] != "-"].copy()
+
+        # Cast and sort
+        df["price"] = df["price"].astype(float)
+        df["date"]  = pd.to_datetime(df["date"])
+        df.sort_values("date", inplace=True)
+        df.reset_index(drop=True, inplace=True)
+
+        # Daily returns
+        df["return"] = df["price"].pct_change()
+        df = df.dropna(subset=["return"]).reset_index(drop=True)
+        df = df[["date", "return"]]
+
+        _CLEANED.mkdir(parents=True, exist_ok=True)
+        df.to_csv(output_path, sep=";", decimal=",", index=False)
+        print(f"Cleaned {filename} → {output_path}  ({len(df)} trading days)")
+
+    except Exception as e:
+        print(f"An error occurred while processing {filename}: {e}")
+
+
 # Process all files in the daily and quarterly folders
 if __name__ == "__main__":
     # Process daily files
@@ -109,3 +170,7 @@ if __name__ == "__main__":
     for file in os.listdir(quarterly_input_dir):
         if file.endswith('.csv'):
             clean_and_save_quarterly_csv(file)
+
+    # Process Economatica index xlsx files
+    clean_economatica_xlsx("ibx.xlsx",       sheet_name="IBXX", output_name="ibx.csv")
+    clean_economatica_xlsx("ibovespa.xlsx",   sheet_name="IBOV", output_name="ibovespa.csv")
