@@ -28,6 +28,7 @@ warnings.filterwarnings('ignore', message='.*torch.load.*')
 
 import argparse
 import time
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -143,10 +144,42 @@ def main():
 
         total = time.time() - start_time
         print("\n" + "=" * 80)
-        print("EVALUATION COMPLETE")
+        print("NEURALCFACTORS EVALUATION COMPLETE")
         print("=" * 80)
         print(f"Total time: {total:.1f}s ({total / 60:.1f} minutes)")
         print(f"Results saved to: {output_dir}")
+
+        # 7. PPCA evaluation + comparison
+        print("\n" + "=" * 80)
+        print("RUNNING PPCA BASELINE EVALUATION")
+        print("=" * 80)
+        import subprocess
+        ppca_result = subprocess.run(
+            [sys.executable, "PPCA/evaluate.py", "--mode", args.mode],
+            cwd=Path(__file__).parent.parent,
+            capture_output=False
+        )
+        
+        if ppca_result.returncode == 0:
+            print("\n" + "=" * 80)
+            print("GENERATING CROSS-MODEL COMPARISON")
+            print("=" * 80)
+            compare_result = subprocess.run(
+                [
+                    sys.executable, "results/compare.py",
+                    "--results", "NeuralFactors:results/evaluation/neuralfactors",
+                    "--results", "PPCA:results/ppca/ppca"
+                ],
+                cwd=Path(__file__).parent.parent,
+                capture_output=False
+            )
+            if compare_result.returncode == 0:
+                print("\n" + "=" * 80)
+                print("FULL EVALUATION PIPELINE COMPLETE")
+                print("=" * 80)
+                print(f"Comparison tables saved to: results/comparison/")
+        else:
+            print("\nWarning: PPCA evaluation failed. Skipping comparison.")
 
     except Exception as e:
         print("\n" + "=" * 80)

@@ -1,0 +1,17 @@
+{
+  "total_return": -0.04129188408856155,
+  "annualized_return": -0.1949630923582536,
+  "annualized_vol": 0.18480782496547715,
+  "sharpe_ratio": -1.0549504188725423,
+  "sortino_ratio": -1.1004887649489747,
+  "calmar_ratio": -1.777130885985662,
+  "max_drawdown": -0.1097066591412708,
+  "avg_turnover": 0.04990601389931009,
+  "annualized_turnover": 12.576315502626143,
+  "avg_max_weight": 0.0028195012344209777,
+  "avg_effective_n": 354.7142857142857,
+  "transaction_cost_bps": 10,
+  "total_return_net": -0.04358729651454485,
+  "annualized_return_net": -0.20482681212060594,
+  "sharpe_ratio_net": -1.1084239028192617
+}

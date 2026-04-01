@@ -14,7 +14,7 @@ from pathlib import Path
 from dataclasses import asdict
 import torch
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
+from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, RichProgressBar
 from pytorch_lightning.loggers import TensorBoardLogger
 from torch.utils.data import DataLoader
 
@@ -67,7 +67,7 @@ def parse_args():
     parser.add_argument("--learning_rate", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--weight_decay", type=float, default=1e-6, help="Weight decay")
     parser.add_argument("--num_iwae_samples", type=int, default=20, help="k in IWAE loss")
-    parser.add_argument("--max_steps", type=int, default=172_900, help="50 epochs (~48 hours)")
+    parser.add_argument("--max_steps", type=int, default=200_000, help="~58 epochs (~9 hours on RTX 3060)")
     parser.add_argument("--val_every_n_steps", type=int, default=100_000, help="Validate only at the end")
     parser.add_argument("--polyak_start_step", type=int, default=None, help="Polyak averaging start (default: max_steps // 2)")
     parser.add_argument("--polyak_alpha", type=float, default=0.999, help="Polyak EMA decay")
@@ -229,6 +229,16 @@ def main():
     print(f"  Train: {len(train_loader)} batches")
     print(f"  Val: {len(val_loader)} batches")
     
+    # Calculate max_epochs for proper epoch display in progress bar
+    batches_per_epoch = len(train_loader)
+    max_epochs = (args.max_steps + batches_per_epoch - 1) // batches_per_epoch  # Round up
+    print(f"  Max steps: {args.max_steps:,} → {max_epochs} epochs")
+    
+    # Calculate max_epochs for proper epoch display in progress bar
+    batches_per_epoch = len(train_loader)
+    max_epochs = (args.max_steps + batches_per_epoch - 1) // batches_per_epoch  # Round up
+    print(f"  Max steps: {args.max_steps:,} → {max_epochs} epochs")
+    
     # Create Lightning module
     print("\n" + "="*80)
     print("Initializing Model")
@@ -254,6 +264,7 @@ def main():
     )
     
     lr_monitor = LearningRateMonitor(logging_interval='step')
+    progress_bar = RichProgressBar(refresh_rate=10)  # Show "Epoch X/Y" format
     
     # Setup logger
     logger = TensorBoardLogger(
@@ -280,11 +291,11 @@ def main():
     
     trainer = pl.Trainer(
         max_steps=args.max_steps,
-        max_epochs=-1,  # Unlimited epochs - only stop when max_steps is reached
+        max_epochs=max_epochs,  # Show epoch progress (e.g., "Epoch 2/58")
         accelerator=accelerator,
         devices=devices,
         precision='16-mixed',  # Use mixed precision for faster training and lower memory usage
-        callbacks=[checkpoint_callback, lr_monitor],
+        callbacks=[checkpoint_callback, lr_monitor, progress_bar],
         logger=logger,
         log_every_n_steps=100,
         limit_val_batches=0.0,  # Disable validation during training

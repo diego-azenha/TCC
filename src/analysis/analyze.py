@@ -24,7 +24,6 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import torch
 from scipy.cluster.hierarchy import dendrogram, linkage
-from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
 import sys
 sys.path.append(str(Path(__file__).parent.parent.parent))  # project root
@@ -59,7 +58,12 @@ def load_model_and_data(checkpoint_path, data_dir, split="test"):
     lookback   = model.model_config.lookback
     train_end  = model.training_config.checkpoint_dir  # fallback default below
     # training_config doesn't store split dates, so read from config.json if present
-    config_json = Path(checkpoint_path).parent / "config.json"
+    # config.json is saved at the experiment root (e.g. checkpoints/new_dataset/config.json)
+    # but the checkpoint itself may live in a subdirectory (e.g. .../neuralfactors-step=.../best.ckpt)
+    ckpt_parent = Path(checkpoint_path).parent
+    config_json = ckpt_parent / "config.json"
+    if not config_json.exists():
+        config_json = ckpt_parent.parent / "config.json"  # one level up for epoch subdirs
     train_end_date = "2018-12-31"
     val_end_date   = "2022-12-31"
     if config_json.exists():
@@ -117,18 +121,25 @@ def plot_loss_curves(log_dir, output_dir):
             print(f"Warning: Log directory {log_dir} not found. Skipping loss curves.")
             return
         
-        # Get all event files
-        event_files = list(log_path.rglob("events.out.tfevents.*"))
-        if not event_files:
-            print(f"Warning: No TensorBoard event files found in {log_dir}")
+        # Pick the highest-numbered version_N directory (most recent training run)
+        version_dirs = sorted(
+            [d for d in log_path.iterdir() if d.is_dir() and d.name.startswith("version_")],
+            key=lambda d: int(d.name.split("_")[1])
+        )
+        if not version_dirs:
+            print(f"Warning: No version_N directories found in {log_dir}")
             return
-        
-        # Use the most recent event file
-        event_file = max(event_files, key=lambda p: p.stat().st_mtime)
-        print(f"Reading TensorBoard logs from: {event_file}")
-        
-        # Load events
-        ea = event_accumulator.EventAccumulator(str(event_file.parent))
+
+        version_dir = version_dirs[-1]
+        event_files = list(version_dir.glob("events.out.tfevents.*"))
+        if not event_files:
+            print(f"Warning: No TensorBoard event files found in {version_dir}")
+            return
+
+        print(f"Reading TensorBoard logs from: {version_dir}  ({len(version_dirs)} versions found, using latest)")
+
+        # Load events from that specific version directory
+        ea = event_accumulator.EventAccumulator(str(version_dir))
         ea.Reload()
         
         # Get available scalars
@@ -144,24 +155,31 @@ def plot_loss_curves(log_dir, output_dir):
             steps = [e.step for e in train_loss]
             values = [e.value for e in train_loss]
             
-            # Plot raw
-            axes[0, 0].plot(steps, values, alpha=0.3, color='blue', linewidth=0.5, label='Raw')
-            
+            vals_arr = np.array(values)
+            # Clip y-axis at [5th, 99th] percentile — spikes are noise, not signal
+            y_lo = np.percentile(vals_arr, 5)
+            y_hi = np.percentile(vals_arr, 99)
+
+            # Plot raw (only within clipped window so it isn't dominated by spikes)
+            axes[0, 0].plot(steps, values, alpha=0.25, color='blue', linewidth=0.5, label='Raw')
+
             # Plot smoothed (rolling mean)
             window = min(100, len(values) // 10)
             if window > 1:
                 smoothed = pd.Series(values).rolling(window, center=True).mean()
-                axes[0, 0].plot(steps, smoothed, color='blue', linewidth=2, label=f'Smoothed (window={window})')
-            
+                axes[0, 0].plot(steps, smoothed, color='blue', linewidth=2, label=f'Smoothed (w={window})')
+
+            axes[0, 0].set_ylim(y_lo - abs(y_lo) * 0.1, y_hi + abs(y_hi) * 0.1)
             axes[0, 0].set_xlabel('Step')
             axes[0, 0].set_ylabel('Loss')
-            axes[0, 0].set_title('Training Loss')
+            axes[0, 0].set_title('Training Loss (5th–99th pct y-axis)')
             axes[0, 0].legend()
             axes[0, 0].grid(True, alpha=0.3)
         
         # 2. Effective Sample Size (ESS)
-        if 'train/ess' in scalar_tags:
-            ess = ea.Scalars('train/ess')
+        ess_tag = next((t for t in scalar_tags if 'ess' in t.lower()), None)
+        if ess_tag and (ess_tag in scalar_tags):
+            ess = ea.Scalars(ess_tag)
             steps = [e.step for e in ess]
             values = [e.value for e in ess]
             axes[0, 1].plot(steps, values, color='green', alpha=0.6)
@@ -252,18 +270,8 @@ def analyze_factor_exposures(model, dataloader, output_dir, num_batches=50):
     all_nu = np.concatenate(all_nu, axis=1)[0]
     
     F = all_beta.shape[1]
-    
-    # 1. Heatmap of factor exposures
-    plt.figure(figsize=(14, 10))
-    sns.heatmap(all_beta[:100], cmap='RdBu_r', center=0, cbar_kws={'label': 'Factor Exposure'})
-    plt.xlabel('Factors')
-    plt.ylabel('Stocks')
-    plt.title(f'Factor Exposures Heatmap (First 100 Stocks, {F} Factors)')
-    plt.tight_layout()
-    plt.savefig(output_dir / 'factor_exposures_heatmap.png', dpi=300)
-    plt.close()
-    
-    # 2. Hierarchical clustering of factors
+
+    # 1. Hierarchical clustering of factors
     plt.figure(figsize=(12, 6))
     linkage_matrix = linkage(all_beta.T, method='ward')
     dendrogram(linkage_matrix)
@@ -274,39 +282,24 @@ def analyze_factor_exposures(model, dataloader, output_dir, num_batches=50):
     plt.savefig(output_dir / 'factor_clustering.png', dpi=300)
     plt.close()
     
-    # 3. t-SNE visualization of stock embeddings
-    if all_beta.shape[0] > 50:  # Only if we have enough stocks
-        print("Computing t-SNE of factor exposures...")
-        tsne = TSNE(n_components=2, random_state=42)
-        beta_2d = tsne.fit_transform(all_beta)
-        
-        plt.figure(figsize=(10, 8))
-        plt.scatter(beta_2d[:, 0], beta_2d[:, 1], alpha=0.5)
-        plt.xlabel('t-SNE Dimension 1')
-        plt.ylabel('t-SNE Dimension 2')
-        plt.title('t-SNE of Stock Factor Exposures')
-        plt.tight_layout()
-        plt.savefig(output_dir / 'factor_exposures_tsne.png', dpi=300)
-        plt.close()
-    
-    # 4. Distribution of alpha, sigma, nu
+    # 3. Distribution of alpha, sigma, nu
+    # Clip axes at [1st, 99th] percentile to suppress outliers that compress the view
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-    
-    axes[0].hist(all_alpha, bins=50, alpha=0.7, edgecolor='black')
-    axes[0].set_xlabel('Alpha (Idiosyncratic Return)')
-    axes[0].set_ylabel('Frequency')
-    axes[0].set_title('Distribution of Alpha')
-    
-    axes[1].hist(all_sigma, bins=50, alpha=0.7, edgecolor='black')
-    axes[1].set_xlabel('Sigma (Scale)')
-    axes[1].set_ylabel('Frequency')
-    axes[1].set_title('Distribution of Sigma')
-    
-    axes[2].hist(all_nu, bins=50, alpha=0.7, edgecolor='black')
-    axes[2].set_xlabel('Nu (Degrees of Freedom)')
-    axes[2].set_ylabel('Frequency')
-    axes[2].set_title('Distribution of Nu')
-    
+
+    def _clipped_hist(ax, data, xlabel, title):
+        lo, hi = np.percentile(data, 1), np.percentile(data, 99)
+        clipped = data[(data >= lo) & (data <= hi)]
+        pct_shown = 100 * len(clipped) / max(len(data), 1)
+        ax.hist(clipped, bins=50, alpha=0.7, edgecolor='black')
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel('Frequency')
+        ax.set_title(f'{title}\n(1st–99th pct, {pct_shown:.0f}% of data)')
+        ax.set_xlim(lo, hi)
+
+    _clipped_hist(axes[0], all_alpha, 'Alpha (Idiosyncratic Return)', 'Distribution of Alpha')
+    _clipped_hist(axes[1], all_sigma, 'Sigma (Scale)', 'Distribution of Sigma')
+    _clipped_hist(axes[2], all_nu, 'Nu (Degrees of Freedom)', 'Distribution of Nu')
+
     plt.tight_layout()
     plt.savefig(output_dir / 'decoder_param_distributions.png', dpi=300)
     plt.close()
@@ -321,6 +314,9 @@ def analyze_factor_exposures(model, dataloader, output_dir, num_batches=50):
     print(f"Alpha (Idiosyncratic): mean={all_alpha.mean():.4f}, std={all_alpha.std():.4f}")
     print(f"Sigma (Scale): mean={all_sigma.mean():.4f}, std={all_sigma.std():.4f}")
     print(f"Nu (Degrees of Freedom): mean={all_nu.mean():.4f}, std={all_nu.std():.4f}")
+
+
+
 
 
 def analyze_prior_parameters(model, output_dir):
@@ -361,7 +357,7 @@ def main():
     args = parse_args()
     
     # Load model and data
-    model, dataloader, dataset = load_model_and_data(
+    model, dataloader, _ = load_model_and_data(
         args.checkpoint, 
         args.data_dir, 
         args.split
@@ -375,7 +371,11 @@ def main():
     print(f"{'='*60}\n")
 
     # Deriva experiment_name a partir do config.json salvo junto ao checkpoint
-    config_json = Path(args.checkpoint).parent / "config.json"
+    # Check parent dir first, then grandparent (checkpoint may be inside an epoch subdir)
+    _ckpt_parent = Path(args.checkpoint).parent
+    config_json = _ckpt_parent / "config.json"
+    if not config_json.exists():
+        config_json = _ckpt_parent.parent / "config.json"
     experiment_name = "neuralfactors"  # fallback
     if config_json.exists():
         with open(config_json) as _f:

@@ -1,0 +1,4 @@
+quantile,theoretical,empirical,error,kupiec_lr,kupiec_p,kupiec_reject,christoffersen_lr,christoffersen_p,christoffersen_reject
+0.01,0.01,0.0,0.01,,,False,,,False
+0.05,0.05,0.0,0.05,,,False,,,False
+0.1,0.1,0.00021622790421103844,0.09978377209578897,3840.193599145457,0.0,True,,,False
