@@ -112,21 +112,104 @@ EncoderConfig:    jitter_multiplier=2.0, use_fp64=True
 
 ---
 
+## Resumo dos Dados
+
+### Fontes de Dados Brutos
+
+| Fonte | Conteúdo | Período | Formato |
+|---|---|---|---|
+| **Economatica** — `fechamento.csv` | Preço de fechamento ajustado por proventos | 2004-12 → 2026-03 | Wide CSV (~1.419 tickers) |
+| **Economatica** — `preco_valor_patrimonial.csv` | P/VPA diário | 2004-12 → 2026-03 | Wide CSV |
+| **Economatica** — trimestrais (5 arquivos) | ROA, ROE, Margem Bruta, Dívida Bruta/Ativo, Dívida Líq./PL (TTM) | 1986 → 2025 | Wide CSV, grade diária |
+| **Bloomberg** — `bloomberg_indices_values.xlsx` | 29 séries de índices de mercado (risco, câmbio, renda fixa, commodities, equity global) | 2005-01-03 → 2026-03-26 | Excel (5 sheets) |
+| **Economatica** — `setor_ibovespa.xlsx` | Classificação setorial de ~1.420 tickers (3 níveis; pipeline usa `setor_economico`) | — | Excel |
+
+### Estatísticas do Dataset
+
+| Item | Valor |
+|---|---|
+| **Tickers únicos** (universo total) | 956 |
+| **Tickers no período de treino** | 841 |
+| **Dias úteis totais** (`x_ts`) | 5.259 |
+| **Observações (ticker × dia)** | ~1,74 milhão |
+| **Dimensão temporal** (`d_ts`) | 38 features |
+| **Dimensão estática** (`d_static`) | 11 setores (one-hot) |
+| **Período coberto** | 2005-01-04 → 2026-03-26 |
+
+### Features Utilizadas
+
+**Série temporal por ativo — `x_ts.parquet`** (`d_ts = 38`):
+
+| Grupo | Features | Qtd. |
+|---|---|---|
+| Retorno do ativo | Log-return diário normalizado ($r / \sigma_{train}$) | 1 |
+| Fundamentais contábeis | ROA, ROE, Margem Bruta, Dívida Bruta/Ativo, Dívida Líq./PL, P/VPA, EV/EBITDA, P/L | 8 |
+| Risco & sentimento | VIX Index, MOVE Index, Brazil CDS 5Y | 3 |
+| Brasil macro & câmbio | DI Over (BZDIOVRA), USD/BRL | 2 |
+| Brasil equity factors | MXBRSC, MXBRLC, MXBR000V, IDIV, MLCXBV, MU702608 | 6 |
+| Renda fixa | BZRFIMAB, BZRFIMA, SPUHYBDT | 3 |
+| Commodities | BCOMAGTR, BCOMGCTR, BCOMINTR, BCOMNGTR, BCOMSITR, BCOMCOT | 6 |
+| MSCI internacionais | MXEF, MXCN, MXJP, MXGB, MXCA, MXEU, MXLA, MXPCJ, MXUS | 9 |
+
+**Features estáticas por ativo — `x_static.parquet`** (`d_static = 11`): one-hot do setor econômico (Bens Industriais, Comunicações, Consumo Cíclico, Consumo Não Cíclico, Financeiro, Materiais Básicos, Outros, Petróleo Gás e Biocombustíveis, Saúde, Tecnologia da Informação, Utilidade Pública).
+
+### Tratamento dos Dados
+
+O pipeline é dividido em quatro camadas sequenciais:
+
+```
+Camada 0 — Raw          Camada 1 — Clean        Camada 2 — Features      Camada 3 — Model-Ready
+raw/ (CSV, XLSX)  ──▶  cleaned/ (Parquet)  ──▶  features/ (Parquet)  ──▶  parquets/ (Parquet)
+```
+
+**Camada 1 — Limpeza (`cleaned/`)**:
+- **Preços**: remoção de preços ≤ 0; universo definido por pares `(date, ticker)` com preço válido (sem dependência de composição histórica de índice).
+- **Fundamentais trimestrais**: filtragem pelo universo de preços; **winsorização nos percentis 1% e 99%** para conter outliers extremos.
+- **Índices Bloomberg**: **interpolação linear** para gaps de até 3 dias úteis; gaps maiores permanecem `NaN`.
+- **Setores**: mapeamento de setor `"-"` para `"Outros"`; deduplicação por ticker.
+
+**Camada 2 — Feature Engineering (`features/`)**:
+- **Log-returns**: $r_{i,t} = \ln(P_{i,t}/P_{i,t-1})$; `±Inf` (preço zero ou negativo) substituídos por `NaN`.
+- **Fundamentais**: `ffill()` por ticker após merge com calendário diário. **Sem `bfill()`** — evita look-ahead bias. Valores trimestrais propagados ~60 dias úteis até o próximo reporte.
+- **Retornos de índices Bloomberg**: $r^{idx}_t = \ln(I_t/I_{t-1})$; sufixo `_ret` adicionado a cada série.
+
+**Camada 3 — Normalização (`parquets/`)**:
+
+| Feature | Normalização | Estatística de Referência (treino) |
+|---|---|---|
+| Retorno do ativo | Divisão por $\sigma_{train}$ (sem subtrair média) | $\sigma_{train} = 0{,}0545$ |
+| Fundamentais (8) | Z-score global: $(f - \mu_{f,train})/\sigma_{f,train}$ | Pooled across tickers × datas no treino |
+| Índices Bloomberg (29) | Z-score por série: $(r^{idx} - \mu^{idx}_{train})/\sigma^{idx}_{train}$ | Calculado individualmente por série |
+
+> **Regra cardinal**: todas as estatísticas de normalização ($\mu$, $\sigma$) são computadas **exclusivamente no período de treino** — nunca em validação ou teste. `NaN` residuais após normalização são preenchidos com `0.0` (= média na escala normalizada).
+
+### Divisão Temporal
+
+| Split | Período | Dias úteis | Tickers |
+|---|---|---|---|
+| **Treino** | 2005-01-04 → 2018-12-31 | 3.458 | 841 |
+| **Validação** | 2019-01-01 → 2022-12-31 | 994 | 556 |
+| **Teste** | 2023-01-01 → 2026-03-26 | 807 | 489 |
+
+> A documentação detalhada do pipeline de dados está em [`data/data_documentation.md`](data/data_documentation.md).
+
+---
+
 ## Data Pipeline
 
 Data is loaded from `data/parquets/` (long format: `date`, `ticker`, feature columns). Key steps in `src/utils/data_utils.py`:
 
 1. **`load_parquets()`** — loads time-series features, static features, and closing prices
 2. **`compute_returns()`** — computes log returns; `±Inf` from zero/negative prices are replaced with `NaN` for proper masking
-3. **`compute_returns_std_from_train()`** — computes return normalization std from the training period (≈0.0627 for IBX vs. ≈0.0267 for S&P 500)
+3. **`compute_returns_std_from_train()`** — computes return normalization std from the training period (≈0.0545 for IBX)
 4. **`split_by_date()`** — partitions into train/val/test
 
 `src/utils/dataset.py` implements a PyTorch `Dataset` that yields, for each trading day, lookback tensors `S[N, L, d_ts]`, static features `S_static[N, d_static]`, returns `r[N]`, and a validity mask `mask[N]`.
 
 **Data splits** (adjusted for IBX availability):
-- Training: 2005-01-01 – 2018-12-31 (≈3,458 trading days)
-- Validation: 2019-01-01 – 2022-12-31 (≈994 trading days)
-- Test: 2023-01-01 – 2025-11-04 (≈712 trading days)
+- Training: 2005-01-04 – 2018-12-31 (3,458 trading days)
+- Validation: 2019-01-01 – 2022-12-31 (994 trading days)
+- Test: 2023-01-01 – 2026-03-26 (807 trading days)
 
 ---
 
