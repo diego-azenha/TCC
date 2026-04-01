@@ -167,7 +167,7 @@ def main():
             compare_result = subprocess.run(
                 [
                     sys.executable, "results/compare.py",
-                    "--results", "NeuralFactors:results/evaluation/neuralfactors",
+                    "--results", f"NeuralFactors:results/evaluation/{args.experiment_name}",
                     "--results", "PPCA:results/ppca/ppca"
                 ],
                 cwd=Path(__file__).parent.parent,

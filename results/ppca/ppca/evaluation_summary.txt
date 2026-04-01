@@ -1,43 +1,71 @@
 ================================================================================
 PPCA MODEL EVALUATION SUMMARY
 ================================================================================
-Generated: 2026-03-23 01:59:02
+Generated: 2026-04-01 11:01:59
 
 --------------------------------------------------------------------------------
 1. NEGATIVE LOG-LIKELIHOOD
 --------------------------------------------------------------------------------
-Dates processed: 698
-Date range: 2023-01-02 00:00:00 to 2025-11-04 00:00:00
-Mean NLL_joint: 61.7449 ± 51.6403
-Mean NLL_ind:   0.6594 ± 0.5491
+Dates processed: 751
+Date range: 2023-01-02 00:00:00 to 2026-03-26 00:00:00
+Mean NLL_joint: 219.2877 ± 309.0799
+Mean NLL_ind:   0.7467 ± 1.0694
 
 --------------------------------------------------------------------------------
 2. COVARIANCE PREDICTION
 --------------------------------------------------------------------------------
-Dates processed: 698
-Date range: 2023-01-02 00:00:00 to 2025-11-04 00:00:00
-Mean MSE: 0.000005
-Std MSE:  0.000021
+Dates processed: 751
+Date range: 2023-01-02 00:00:00 to 2026-03-26 00:00:00
+Mean MSE: 0.000000
+Std MSE:  0.000001
 Min MSE:  0.000000
-Max MSE:  0.000172
+Max MSE:  0.000010
 
 --------------------------------------------------------------------------------
 3. VALUE AT RISK CALIBRATION
 --------------------------------------------------------------------------------
-Quantile     Theoretical     Empirical       Error      Quality
------------------------------------------------------------------
-0.01         0.0100          0.0132          0.0032     Good
-0.05         0.0500          0.0354          0.0146     Good
-0.10         0.1000          0.0627          0.0373     OK
+Quantile   Theor.     Empir.     Error      Kupiec p     Christ. p    Quality
+--------------------------------------------------------------------------------
+0.01       0.0100     0.0120     0.0020     0.0000       0.0000       Good
+0.05       0.0500     0.0327     0.0173     0.0000       0.0000       Good
+0.10       0.1000     0.0596     0.0404     0.0000       0.0000       OK
+
+Kupiec (1995): H0 = violation rate equals theoretical level
+Christoffersen (1998): H0 = violations are independent (no clustering)
+Reject at 5% significance when p-value < 0.05
 
 --------------------------------------------------------------------------------
 4. PORTFOLIO BACKTEST (MIN-VARIANCE)
 --------------------------------------------------------------------------------
-Total Return:       37.30%
-Annualized Return:  11.89%
-Annualized Vol:     13.94%
-Sharpe Ratio:       0.85
-Max Drawdown:       -14.55%
+Total Return:       19.35%
+Annualized Return:  5.69%
+Annualized Vol:     10.42%
+Sharpe Ratio:       0.55
+Sortino Ratio:      0.53
+Calmar Ratio:       0.43
+Max Drawdown:       -13.13%
+
+Portfolio Characteristics:
+  Avg Turnover/day: 0.0420
+  Ann. Turnover:    10.6x
+  Avg Max Weight:   1.99%
+  Avg Effective N:  108.9
+
+After Transaction Costs (10 bps one-way):
+  Net Total Return: 15.38%
+  Net Ann. Return:  4.58%
+  Net Sharpe Ratio: 0.44
+
+Benchmark Comparison (Ibovespa):
+  Ann. Return:      18.04%
+  Sharpe:           1.16
+  Excess Return:    -12.36%
+  Information Ratio:-1.32
+
+Notes:
+  - Annualised returns use geometric CAGR: (1 + total)^(252/n) - 1
+  - Sharpe and Sortino use Rf = 0 (risk-free rate not subtracted)
+  - Transaction costs assume 10 bps proportional cost per one-way turnover
 
 ================================================================================
 END OF REPORT

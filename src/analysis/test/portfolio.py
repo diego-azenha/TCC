@@ -260,8 +260,8 @@ def compute_portfolio_metrics(model, dataset, returns_std, mode, device, output_
         'sharpe_ratio_net': float(sharpe_net),
     }
 
-    # Benchmark comparison
-    data_dir = Path(output_dir).parent.parent / "data"
+    # Benchmark comparison — ibovespa.csv lives in the top-level data/ folder
+    data_dir = Path(__file__).parent.parent.parent.parent / "data"
     benchmark_df = load_ibovespa_returns(data_dir, returns_df['date'].min(), returns_df['date'].max())
     if benchmark_df is not None:
         merged = returns_df.merge(benchmark_df, on='date', suffixes=('_strategy', '_benchmark'))

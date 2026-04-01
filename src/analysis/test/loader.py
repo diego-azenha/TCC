@@ -37,8 +37,11 @@ def load_model_and_data(checkpoint_path, data_dir, split='test'):
     print("✓ Model loaded successfully")
 
     # Load returns_std, lookback and split dates from saved config or recompute
+    # config.json lives in the experiment dir (parent of the epoch checkpoint subdir)
     checkpoint_dir = Path(checkpoint_path).parent
     config_path = checkpoint_dir / "config.json"
+    if not config_path.exists():
+        config_path = checkpoint_dir.parent / "config.json"
     if config_path.exists():
         with open(config_path, 'r') as f:
             config = json.load(f)

@@ -121,6 +121,30 @@ def compute_var_metrics(model, dataloader, dataset, num_samples, mode, returns_s
     if max_dates:
         print(f"Debug mode: Processing first {max_dates} dates")
 
+    # ── Empirical factor distribution ────────────────────────────────────────
+    # The prior collapses during training (sigma_z → ~0.066), making direct
+    # prior sampling near-deterministic. Instead, collect the posterior means
+    # {mu_q(t)} from the first 250 test dates and use their empirical
+    # distribution as the forecast distribution for z. This captures how much
+    # factors actually vary day-to-day — the correct source of uncertainty for
+    # out-of-sample VaR (historical simulation through the learned factor lens).
+    print("Pre-computing empirical factor distribution (first 250 test dates)...")
+    factor_samples = []
+    n_prepass = min(250, len(dataloader))
+    model.eval()
+    with torch.no_grad():
+        for idx, batch in enumerate(dataloader):
+            if idx >= n_prepass:
+                break
+            S_p, S_static_p, r_p, mask_p = [x.to(device) for x in batch]
+            _, _, _, _, mu_q_p, _ = model.model.encode(S_p, S_static_p, r_p, mask_p)
+            factor_samples.append(mu_q_p.squeeze(0).float().cpu().numpy())  # [F]
+
+    factor_arr  = np.stack(factor_samples, axis=0)          # [T_pre, F]
+    factor_mean = factor_arr.mean(axis=0)                   # [F]
+    factor_std  = factor_arr.std(axis=0).clip(min=1e-6)     # [F]  diagonal approx
+    print(f"  Factor empirical std (mean across factors): {factor_std.mean():.4f}")
+
     all_predictions = []
     all_actuals = []
 
@@ -136,20 +160,22 @@ def compute_var_metrics(model, dataloader, dataset, num_samples, mode, returns_s
             r = r.to(device)
             mask = mask.to(device)
 
-            S_sq = S.squeeze(0)
-            S_static_sq = S_static.squeeze(0)
+            # Get decoder parameters for this day (no posterior needed)
+            alpha, B, sigma, nu, _, _ = model.model.encode(S, S_static, r, mask)
 
-            alpha, B, sigma, nu = model.model.embedder(S_sq, S_static_sq)
+            # Sample z from the empirical factor distribution (diagonal Normal approx).
+            # This is the out-of-sample forecast distribution: "given how factors
+            # moved historically, what is the predictive return distribution today?"
+            F_dim = factor_mean.shape[0]
+            z_numpy = np.random.normal(
+                loc=factor_mean,
+                scale=factor_std,
+                size=(num_samples, F_dim),
+            )
+            z = torch.from_numpy(z_numpy).float().unsqueeze(0).to(device)  # [1, K, F]
 
-            z = model.model.prior.sample(batch_size=1, num_samples=num_samples, device=S.device)
-
-            alpha_b = alpha.unsqueeze(0)
-            B_b = B.unsqueeze(0)
-            sigma_b = sigma.unsqueeze(0)
-            nu_b = nu.unsqueeze(0)
-
-            r_samples = dec.sample_r_given_z(alpha_b, B_b, sigma_b, nu_b, z)  # [1, N, K]
-            r_samples = r_samples[0].cpu().numpy() * returns_std          # [N, K]
+            r_samples = dec.sample_r_given_z(alpha, B, sigma, nu, z)  # [1, N, K]
+            r_samples = r_samples[0].cpu().numpy() * returns_std       # [N, K]
 
             r_actual = r[0].cpu().numpy() * returns_std
             mask_np = mask[0].cpu().numpy().astype(bool)
