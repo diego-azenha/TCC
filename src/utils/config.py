@@ -161,7 +161,7 @@ class TrainingConfig:
     
     # Data normalization (from paper Section 5)
     normalize_returns: bool = True
-    returns_std: float = 0.02672357  # Approx std of returns in training period
+    returns_std: float = None  # Computed from training data or loaded from normalization_stats.json
     
     # Reproducibility
     seed: int = 42

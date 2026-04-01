@@ -3,7 +3,8 @@
 NEURALFACTORSARTICLE.TXT
 
 /checkpoints
-/logs
+/_data(old)
+/_CLAUDE
 
 # Python
 __pycache__/

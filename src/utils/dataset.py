@@ -2,6 +2,11 @@
 
 Dataset loads parquet files, builds lookback windows, and returns
 (S, S_static, r, mask) tuples where each sample is all stocks from one trading day.
+
+Data format (new parquet-only pipeline):
+- x_ts.parquet: long [date, ticker, 38 normalized features]
+- x_static.parquet: [ticker, one-hot sectors] — NO date column
+- prices.parquet: long [date, ticker, close] — raw adjusted prices
 """
 
 import pandas as pd
@@ -16,7 +21,6 @@ from .data_utils import (
     split_by_date,
     compute_returns,
     normalize_returns,
-    get_universe_at_date,
     compute_returns_std_from_train,
 )
 
@@ -28,10 +32,8 @@ class NeuralFactorsDataset(Dataset):
     Returns: (S, S_static, r, mask) where:
     - S: [N, L, d_ts] time-series features with lookback
     - S_static: [N, d_static] static features
-    - r: [N] next-day returns
+    - r: [N] next-day returns (normalized)
     - mask: [N] boolean mask for valid stocks
-    
-    Paper Section 5: Train 1996-2013, Val 2014-2018, Test 2019-2023
     """
     
     def __init__(
@@ -49,8 +51,8 @@ class NeuralFactorsDataset(Dataset):
         """
         Args:
             x_ts_path: Path to time-series features parquet
-            x_static_path: Path to static features parquet
-            prices_path: Path to prices CSV
+            x_static_path: Path to static features parquet (no date column)
+            prices_path: Path to prices parquet (long: date, ticker, close)
             split: One of 'train', 'val', 'test'
             lookback: Lookback window size (paper: 256)
             normalize: If True, normalize returns by std
@@ -68,7 +70,7 @@ class NeuralFactorsDataset(Dataset):
         print(f"Loading data for {split} split...")
         df_ts, df_static, df_prices = load_parquets(x_ts_path, x_static_path, prices_path)
         
-        # Compute returns
+        # Compute returns from long-format prices (date, ticker, close) -> (date, ticker, return)
         print("Computing returns...")
         returns_df = compute_returns(df_prices, log_returns=True)
         
@@ -86,44 +88,38 @@ class NeuralFactorsDataset(Dataset):
         else:
             self.returns_std = 1.0
         
-        # Convert returns from wide to long format (date, ticker, value)
-        from src.utils.data_utils import melt_to_long_format
-        returns_df = melt_to_long_format(returns_df)
-        returns_df.rename(columns={'value': 'return'}, inplace=True)
-        
-        # Split data by date
+        # Split time-series and returns by date
         print(f"Splitting data: train_end={train_end}, val_end={val_end}")
         df_ts_train, df_ts_val, df_ts_test = split_by_date(df_ts, train_end, val_end)
-        df_static_train, df_static_val, df_static_test = split_by_date(df_static, train_end, val_end)
         returns_train, returns_val, returns_test = split_by_date(returns_df, train_end, val_end)
         
         # Select appropriate split
         split_map = {
-            'train': (df_ts_train, df_static_train, returns_train),
-            'val': (df_ts_val, df_static_val, returns_val),
-            'test': (df_ts_test, df_static_test, returns_test),
+            'train': (df_ts_train, returns_train),
+            'val': (df_ts_val, returns_val),
+            'test': (df_ts_test, returns_test),
         }
         
         if split not in split_map:
             raise ValueError(f"split must be one of {list(split_map.keys())}, got {split}")
         
-        self.df_ts, self.df_static, self.returns_df = split_map[split]
+        self.df_ts, self.returns_df = split_map[split]
+        
+        # x_static has NO date column — just [ticker, features]. No need to split.
+        self.df_static = df_static
         
         # For lookback, we need data BEFORE the split start date
         # Concatenate with previous split's data
         if split == 'val':
             self.df_ts_full = pd.concat([df_ts_train, self.df_ts], axis=0)
-            self.df_static_full = pd.concat([df_static_train, self.df_static], axis=0)
         elif split == 'test':
             self.df_ts_full = pd.concat([df_ts_train, df_ts_val, self.df_ts], axis=0)
-            self.df_static_full = pd.concat([df_static_train, df_static_val, self.df_static], axis=0)
         else:
             self.df_ts_full = self.df_ts.copy()
-            self.df_static_full = self.df_static.copy()
         
-        # Get feature column names (exclude 'date', 'ticker')
+        # Get feature column names
         self.ts_feature_cols = [col for col in self.df_ts.columns if col not in ['date', 'ticker']]
-        self.static_feature_cols = [col for col in self.df_static.columns if col not in ['date', 'ticker']]
+        self.static_feature_cols = [col for col in self.df_static.columns if col not in ['ticker']]
         
         self.d_ts = len(self.ts_feature_cols)
         self.d_static = len(self.static_feature_cols)
@@ -134,7 +130,6 @@ class NeuralFactorsDataset(Dataset):
         # ── PRE-INDEX: evita filtragem linear no __getitem__ ─────────────────
 
         # ts: agrupa por ticker, ordena por date, extrai arrays numpy
-        # _ts_grouped é temporário — liberado após extrair datas e valores
         _ts_grouped = {
             ticker: grp.sort_values('date').reset_index(drop=True)
             for ticker, grp in self.df_ts_full.groupby('ticker')
@@ -149,21 +144,22 @@ class NeuralFactorsDataset(Dataset):
             ticker: df[self.ts_feature_cols].values.astype(np.float32)
             for ticker, df in _ts_grouped.items()
         }
-        del _ts_grouped  # libera memória intermediária
+        del _ts_grouped
 
-        # static: set_index vetorizado → zip(keys, rows) sem iterrows()
+        # static: keyed by ticker only (no date dimension)
         _static_indexed = (
-            self.df_static_full
-            .set_index(['ticker', 'date'])[self.static_feature_cols]
+            self.df_static
+            .set_index('ticker')[self.static_feature_cols]
             .astype(np.float32)
         )
-        # {(ticker, date): np.array([f1, f2, ...])} — sem loop Python por linha
-        self._static_cache: dict = dict(
-            zip(list(_static_indexed.index), _static_indexed.values)
-        )
+        # {ticker: np.array([f1, f2, ...])}
+        self._static_cache: dict = {
+            ticker: row.values
+            for ticker, row in _static_indexed.iterrows()
+        }
         del _static_indexed
 
-        # returns: pivot vetorizado → iterrows() sobre N_datas (~3458) apenas
+        # returns: pivot vetorizado → iterrows() sobre N_datas apenas
         _returns_pivot = self.returns_df.pivot(
             index='date', columns='ticker', values='return'
         )
@@ -226,8 +222,8 @@ class NeuralFactorsDataset(Dataset):
             ts_values = values_arr[end_idx - self.lookback: end_idx]
             S[i] = torch.from_numpy(np.nan_to_num(ts_values))
 
-            # O(1) static lookup
-            static_values = self._static_cache.get((ticker, target_date))
+            # O(1) static lookup — keyed by ticker only (no date)
+            static_values = self._static_cache.get(ticker)
             if static_values is not None:
                 S_static[i] = torch.from_numpy(np.nan_to_num(static_values))
                 mask[i] = True

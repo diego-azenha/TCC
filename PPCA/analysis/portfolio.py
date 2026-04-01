@@ -30,6 +30,15 @@ def compute_max_drawdown(returns: np.ndarray) -> float:
     return float(drawdown.min())
 
 
+def compute_downside_std(returns: np.ndarray, risk_free: float = 0.0) -> float:
+    """Annualised downside deviation (Sortino denominator)."""
+    excess = np.asarray(returns) - risk_free / 252
+    neg = excess[excess < 0]
+    if len(neg) < 2:
+        return 0.0
+    return float(np.sqrt(np.mean(neg ** 2)) * np.sqrt(252))
+
+
 def optimize_portfolio(r_cov: np.ndarray) -> np.ndarray:
     """Min-variance portfolio weights: argmin w^T Sigma w  s.t. sum(w)=1, w>=0.
 
@@ -68,16 +77,15 @@ def load_ibovespa_returns(
 
     Returns pd.DataFrame [date, return] or None if file not found.
     """
-    ibov_path = Path(data_dir) / "cleaned" / "ibovespa.csv"
+    ibov_path = Path(data_dir) / "ibovespa.csv"
     if not ibov_path.exists():
         print(f"  Warning: Ibovespa data not found at {ibov_path}. Skipping benchmark.")
         return None
     try:
         df = pd.read_csv(ibov_path, sep=";", decimal=",", parse_dates=["date"])
         df = df[(df["date"] >= start_date) & (df["date"] <= end_date)]
-        df = df.sort_values("date")
-        df["return"] = df["price"].pct_change()
-        return df[["date", "return"]].dropna().reset_index(drop=True)
+        df = df.sort_values("date").reset_index(drop=True)
+        return df[["date", "return"]].dropna()
     except Exception as e:
         print(f"  Warning: Error loading Ibovespa data: {e}")
         return None
@@ -137,6 +145,10 @@ def compute_portfolio_metrics(
 
     portfolio_returns = []
     dates_out = []
+    turnover_series = []
+    max_weight_series = []
+    eff_n_series = []
+    prev_weights_by_ticker = {}  # {ticker: weight} from previous period
 
     for idx_today, idx_next in tqdm(pairs, desc="Running Backtest"):
         window = returns_wide.iloc[idx_today - window_size : idx_today]
@@ -180,6 +192,22 @@ def compute_portfolio_metrics(
         portfolio_returns.append(port_r)
         dates_out.append(returns_wide.index[idx_next])
 
+        # -- Concentration metrics --
+        max_weight_series.append(float(weights.max()))
+        hhi = float(np.sum(weights ** 2))
+        eff_n_series.append(1.0 / hhi if hhi > 0 else len(weights))
+
+        # -- Turnover --
+        new_w_dict = {t: float(w) for t, w in zip(common_in_fit, weights)}
+        if prev_weights_by_ticker:
+            all_tickers = set(new_w_dict) | set(prev_weights_by_ticker)
+            turnover = sum(
+                abs(new_w_dict.get(t, 0.0) - prev_weights_by_ticker.get(t, 0.0))
+                for t in all_tickers
+            )
+            turnover_series.append(turnover)
+        prev_weights_by_ticker = new_w_dict
+
     returns_df = pd.DataFrame({"date": dates_out, "return": portfolio_returns})
 
     print(f"\n  Backtest complete — {len(returns_df)} periods")
@@ -195,20 +223,59 @@ def compute_portfolio_metrics(
     ann_vol         = float(arr.std() * np.sqrt(ann))
     sharpe          = ann_return / ann_vol if ann_vol > 0 else np.nan
     max_dd          = compute_max_drawdown(arr)
+    downside        = compute_downside_std(arr)
+    sortino         = ann_return / downside if downside > 0 else float("nan")
+    calmar          = ann_return / abs(max_dd) if max_dd != 0 else float("nan")
+
+    # Turnover & concentration summaries
+    avg_turnover  = float(np.mean(turnover_series)) if turnover_series else float("nan")
+    ann_turnover  = avg_turnover * ann if turnover_series else float("nan")
+    avg_max_weight = float(np.mean(max_weight_series)) if max_weight_series else float("nan")
+    avg_eff_n     = float(np.mean(eff_n_series)) if eff_n_series else float("nan")
+
+    # Transaction costs (proportional, one-way)
+    tc_bps = 10  # 10 bps per one-way trade
+    tc_rate = tc_bps / 10_000
+    tc_daily = [tc_rate * t for t in turnover_series] if turnover_series else []
+    arr_net = arr.copy()
+    if tc_daily:
+        for i, tc in enumerate(tc_daily):
+            arr_net[i + 1] -= tc
+    total_return_net = float((1 + arr_net).prod() - 1)
+    ann_return_net   = float((1 + total_return_net) ** (ann / len(arr_net)) - 1)
+    ann_vol_net      = float(arr_net.std() * np.sqrt(ann))
+    sharpe_net       = ann_return_net / ann_vol_net if ann_vol_net > 0 else float("nan")
 
     metrics: dict = {
-        "total_return":      total_return,
-        "annualized_return": ann_return,
-        "annualized_vol":    ann_vol,
-        "sharpe_ratio":      sharpe,
-        "max_drawdown":      max_dd,
+        "total_return":         total_return,
+        "annualized_return":    ann_return,
+        "annualized_vol":       ann_vol,
+        "sharpe_ratio":         sharpe,
+        "sortino_ratio":        sortino,
+        "calmar_ratio":         calmar,
+        "max_drawdown":         max_dd,
+        "avg_turnover":         avg_turnover,
+        "annualized_turnover":  ann_turnover,
+        "avg_max_weight":       avg_max_weight,
+        "avg_effective_n":      avg_eff_n,
+        "transaction_cost_bps": tc_bps,
+        "total_return_net":     total_return_net,
+        "annualized_return_net": ann_return_net,
+        "sharpe_ratio_net":     sharpe_net,
     }
 
     print(f"  Total Return:      {total_return:.2%}")
     print(f"  Annualised Return: {ann_return:.2%}")
     print(f"  Annualised Vol:    {ann_vol:.2%}")
     print(f"  Sharpe Ratio:      {sharpe:.2f}")
+    print(f"  Sortino Ratio:     {sortino:.2f}")
+    print(f"  Calmar Ratio:      {calmar:.2f}")
     print(f"  Max Drawdown:      {max_dd:.2%}")
+    print(f"  Avg Turnover/day:  {avg_turnover:.4f}")
+    print(f"  Ann. Turnover:     {ann_turnover:.1f}x")
+    print(f"  Avg Max Weight:    {avg_max_weight:.2%}")
+    print(f"  Avg Effective N:   {avg_eff_n:.1f}")
+    print(f"  Sharpe (net {tc_bps}bps): {sharpe_net:.2f}")
 
     # Benchmark
     start_str = str(returns_df["date"].min().date())
@@ -248,10 +315,11 @@ def plot_cumulative_returns(
     data_dir: Path,
 ) -> None:
     """Plot cumulative portfolio return vs Ibovespa benchmark."""
-    fig, ax = plt.subplots(figsize=(12, 6))
+    fig, ax = plt.subplots(figsize=(14, 7))
 
     cumret = (1 + returns_df["return"].values).cumprod()
-    ax.plot(returns_df["date"], cumret, label="PPCA Min-Variance", linewidth=1.8)
+    ax.plot(returns_df["date"], cumret, label="PPCA Min-Variance",
+            linewidth=1.8, color="#1f77b4")
 
     start_str = str(returns_df["date"].min().date())
     end_str   = str(returns_df["date"].max().date())
@@ -259,16 +327,17 @@ def plot_cumulative_returns(
     if ibov_df is not None:
         ibov_cum = (1 + ibov_df["return"].values).cumprod()
         ax.plot(ibov_df["date"], ibov_cum, label="Ibovespa", linewidth=1.8,
-                linestyle="--", color="gray")
+                linestyle="--", color="grey")
 
     ax.axhline(1.0, color="black", linewidth=0.8, linestyle=":")
-    ax.set_xlabel("Date")
-    ax.set_ylabel("Cumulative Return (base 1)")
-    ax.set_title("PPCA — Portfolio Backtest: Cumulative Returns")
-    ax.legend()
+    ax.set_xlabel("Date", fontsize=12)
+    ax.set_ylabel("Cumulative Return (base 1)", fontsize=12)
+    ax.set_title("PPCA — Portfolio Backtest: Cumulative Returns",
+                 fontsize=14, fontweight="bold")
+    ax.legend(loc="upper left", fontsize=10, framealpha=0.9)
     ax.grid(True, alpha=0.3)
-    plt.tight_layout()
+    fig.tight_layout()
     output_path = output_dir / "plots" / "cumulative_returns.png"
-    plt.savefig(output_path, dpi=300, bbox_inches="tight")
-    plt.close()
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
     print(f"  Plot saved: {output_path}")

@@ -25,6 +25,20 @@ def compute_max_drawdown(returns):
     return drawdown.min()
 
 
+def compute_downside_std(returns, risk_free=0.0):
+    """Annualised downside deviation (Sortino denominator)."""
+    excess = np.asarray(returns) - risk_free / 252
+    neg = excess[excess < 0]
+    if len(neg) < 2:
+        return 0.0
+    return float(np.sqrt(np.mean(neg ** 2)) * np.sqrt(252))
+
+
+def compute_turnover(w_new, w_prev):
+    """One-way turnover: sum |w_new - w_prev_drifted|."""
+    return float(np.sum(np.abs(w_new - w_prev)))
+
+
 def optimize_portfolio(r_mean, r_cov, method='min_variance'):
     """Compute portfolio weights.
 
@@ -65,7 +79,7 @@ def load_ibovespa_returns(data_dir, start_date, end_date):
     Returns:
         pd.DataFrame with [date, return] or None if not available
     """
-    ibov_path = Path(data_dir) / "cleaned" / "ibovespa.csv"
+    ibov_path = Path(data_dir) / "ibovespa.csv"
     if not ibov_path.exists():
         print(f"Warning: Ibovespa data not found at {ibov_path}. Skipping benchmark.")
         return None
@@ -73,7 +87,7 @@ def load_ibovespa_returns(data_dir, start_date, end_date):
     try:
         df = pd.read_csv(ibov_path, sep=';', decimal=',', parse_dates=['date'])
         df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
-        df['return'] = df['price'].pct_change()
+        df = df.sort_values('date').reset_index(drop=True)
         return df[['date', 'return']].dropna()
     except Exception as e:
         print(f"Warning: Error loading Ibovespa data: {e}")
@@ -110,6 +124,10 @@ def compute_portfolio_metrics(model, dataset, returns_std, mode, device, output_
 
     portfolio_returns = []
     dates = []
+    turnover_series = []
+    max_weight_series = []
+    eff_n_series = []
+    prev_weights_by_ticker = {}  # {ticker: weight} from previous period
 
     model.eval()
     with torch.no_grad():
@@ -171,6 +189,22 @@ def compute_portfolio_metrics(model, dataset, returns_std, mode, device, output_
                 portfolio_returns.append(port_return)
                 dates.append(dataset.dates[idx + 1])
 
+                # -- Concentration metrics --
+                max_weight_series.append(float(w_both.max()))
+                hhi = float(np.sum(w_both ** 2))
+                eff_n_series.append(1.0 / hhi if hhi > 0 else len(w_both))
+
+                # -- Turnover --
+                new_w_dict = {t: w for t, w in zip(common, w_both)}
+                if prev_weights_by_ticker:
+                    all_tickers = set(new_w_dict) | set(prev_weights_by_ticker)
+                    turnover = sum(
+                        abs(new_w_dict.get(t, 0.0) - prev_weights_by_ticker.get(t, 0.0))
+                        for t in all_tickers
+                    )
+                    turnover_series.append(turnover)
+                prev_weights_by_ticker = new_w_dict
+
     returns_df = pd.DataFrame({'date': dates, 'return': portfolio_returns})
 
     print(f"\n✓ Backtest Complete")
@@ -178,18 +212,52 @@ def compute_portfolio_metrics(model, dataset, returns_std, mode, device, output_
     print(f"  Date range: {returns_df['date'].min()} to {returns_df['date'].max()}")
 
     arr = returns_df['return'].values
+    ann = 252
     total_return = (1 + arr).prod() - 1
-    ann_return = arr.mean() * 252
-    ann_vol = arr.std() * np.sqrt(252)
+    ann_return = float((1 + total_return) ** (ann / len(arr)) - 1)
+    ann_vol = arr.std() * np.sqrt(ann)
     sharpe = ann_return / ann_vol if ann_vol > 0 else 0
     max_dd = compute_max_drawdown(arr)
+    downside = compute_downside_std(arr)
+    sortino = ann_return / downside if downside > 0 else float('nan')
+    calmar = ann_return / abs(max_dd) if max_dd != 0 else float('nan')
+
+    # Turnover & concentration summaries
+    avg_turnover = float(np.mean(turnover_series)) if turnover_series else float('nan')
+    ann_turnover = avg_turnover * ann if turnover_series else float('nan')
+    avg_max_weight = float(np.mean(max_weight_series)) if max_weight_series else float('nan')
+    avg_eff_n = float(np.mean(eff_n_series)) if eff_n_series else float('nan')
+
+    # Transaction costs (proportional, one-way)
+    tc_bps = 10  # 10 bps per one-way trade
+    tc_rate = tc_bps / 10_000
+    tc_daily = [tc_rate * t for t in turnover_series] if turnover_series else []
+    arr_net = arr.copy()
+    if tc_daily:
+        # First return has no turnover cost; subsequent returns are net of TC
+        for i, tc in enumerate(tc_daily):
+            arr_net[i + 1] -= tc
+    total_return_net = float((1 + arr_net).prod() - 1)
+    ann_return_net = float((1 + total_return_net) ** (ann / len(arr_net)) - 1)
+    ann_vol_net = float(arr_net.std() * np.sqrt(ann))
+    sharpe_net = ann_return_net / ann_vol_net if ann_vol_net > 0 else 0
 
     metrics = {
         'total_return': float(total_return),
         'annualized_return': float(ann_return),
         'annualized_vol': float(ann_vol),
         'sharpe_ratio': float(sharpe),
+        'sortino_ratio': float(sortino),
+        'calmar_ratio': float(calmar),
         'max_drawdown': float(max_dd),
+        'avg_turnover': float(avg_turnover),
+        'annualized_turnover': float(ann_turnover),
+        'avg_max_weight': float(avg_max_weight),
+        'avg_effective_n': float(avg_eff_n),
+        'transaction_cost_bps': tc_bps,
+        'total_return_net': float(total_return_net),
+        'annualized_return_net': float(ann_return_net),
+        'sharpe_ratio_net': float(sharpe_net),
     }
 
     # Benchmark comparison
@@ -201,12 +269,14 @@ def compute_portfolio_metrics(model, dataset, returns_std, mode, device, output_
             bench = merged['return_benchmark'].values
             strat = merged['return_strategy'].values
             excess = strat - bench
-            bench_ann = bench.mean() * 252
-            bench_vol = bench.std() * np.sqrt(252)
-            excess_ann = excess.mean() * 252
-            te = excess.std() * np.sqrt(252)
+            bench_total = float((1 + bench).prod() - 1)
+            bench_ann = float((1 + bench_total) ** (ann / len(bench)) - 1)
+            bench_vol = bench.std() * np.sqrt(ann)
+            excess_total = float((1 + excess).prod() - 1)
+            excess_ann = float((1 + excess_total) ** (ann / len(excess)) - 1)
+            te = excess.std() * np.sqrt(ann)
             metrics.update({
-                'benchmark_total_return': float((1 + bench).prod() - 1),
+                'benchmark_total_return': float(bench_total),
                 'benchmark_annualized_return': float(bench_ann),
                 'benchmark_sharpe': float(bench_ann / bench_vol if bench_vol > 0 else 0),
                 'benchmark_max_drawdown': float(compute_max_drawdown(bench)),
@@ -223,7 +293,14 @@ def compute_portfolio_metrics(model, dataset, returns_std, mode, device, output_
     print(f"    Annualized Return:   {ann_return:.2%}")
     print(f"    Annualized Vol:      {ann_vol:.2%}")
     print(f"    Sharpe Ratio:        {sharpe:.2f}")
+    print(f"    Sortino Ratio:       {sortino:.2f}")
+    print(f"    Calmar Ratio:        {calmar:.2f}")
     print(f"    Max Drawdown:        {max_dd:.2%}")
+    print(f"    Avg Turnover/day:    {avg_turnover:.4f}")
+    print(f"    Ann. Turnover:       {ann_turnover:.1f}x")
+    print(f"    Avg Max Weight:      {avg_max_weight:.2%}")
+    print(f"    Avg Effective N:     {avg_eff_n:.1f}")
+    print(f"    Sharpe (net {tc_bps}bps):  {sharpe_net:.2f}")
 
     # Save
     returns_path = output_dir / "timeseries" / "backtest_returns.csv"
@@ -240,26 +317,30 @@ def compute_portfolio_metrics(model, dataset, returns_std, mode, device, output_
 
 def plot_cumulative_returns(returns_df, output_dir, data_dir):
     """Plot cumulative strategy returns vs Ibovespa benchmark."""
-    plt.figure(figsize=(12, 6))
+    fig, ax = plt.subplots(figsize=(14, 7))
 
     cum = (1 + returns_df['return']).cumprod()
-    plt.plot(returns_df['date'], cum, label='NeuralFactors Min-Variance', linewidth=2, alpha=0.8)
+    ax.plot(returns_df['date'], cum, label='NeuralFactors Min-Variance',
+            linewidth=1.8, color='#1f77b4')
 
     benchmark_df = load_ibovespa_returns(data_dir, returns_df['date'].min(), returns_df['date'].max())
     if benchmark_df is not None:
         merged = returns_df[['date']].merge(benchmark_df, on='date', how='left')
         merged['return'] = merged['return'].fillna(0)
         bench_cum = (1 + merged['return']).cumprod()
-        plt.plot(returns_df['date'], bench_cum, label='Ibovespa', linewidth=2, alpha=0.8, linestyle='--')
+        ax.plot(returns_df['date'], bench_cum, label='Ibovespa',
+                linewidth=1.8, linestyle='--', color='grey')
 
-    plt.xlabel('Date')
-    plt.ylabel('Cumulative Return')
-    plt.title('Cumulative Returns: NeuralFactors vs Benchmark')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
+    ax.axhline(1.0, color='black', linewidth=0.8, linestyle=':')
+    ax.set_xlabel('Date', fontsize=12)
+    ax.set_ylabel('Cumulative Return (base 1)', fontsize=12)
+    ax.set_title('NeuralFactors — Portfolio Backtest: Cumulative Returns',
+                 fontsize=14, fontweight='bold')
+    ax.legend(loc='upper left', fontsize=10, framealpha=0.9)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
 
     output_path = output_dir / "plots" / "cumulative_returns.png"
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    plt.close()
+    fig.savefig(output_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
     print(f"✓ Cumulative returns plot saved to: {output_path}")

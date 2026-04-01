@@ -1,6 +1,6 @@
 """Data loading and splitting utilities for PPCA evaluation.
 
-Loads prices from the same CSV used by NeuralFactors, computes log returns,
+Loads prices from the same parquet used by NeuralFactors, computes log returns,
 pivots to wide format (date × ticker), normalises by training-period std,
 and provides positional indices for each evaluation split.
 """
@@ -27,9 +27,8 @@ def load_returns_wide(
 
     Processing steps
     ----------------
-    1. Read ``data/cleaned/fechamentos_ibx.csv`` (semicolon-delimited,
-       comma decimals, date column ``DATES`` in DD/MM/YYYY).
-    2. Compute log returns: log(price_t / price_{t-1}).
+    1. Read ``data/parquets/prices.parquet`` (long format: date, ticker, close).
+    2. Compute log returns per ticker: log(price_t / price_{t-1}).
     3. Replace ±Inf / NaN with NaN (handles zero / missing prices).
     4. Pivot to wide format: rows = trading dates, columns = tickers.
     5. Compute ``returns_std`` = std of all finite returns in the
@@ -38,7 +37,7 @@ def load_returns_wide(
 
     Parameters
     ----------
-    data_dir  : root data directory (contains ``cleaned/`` subfolder)
+    data_dir  : root data directory (contains ``parquets/`` subfolder)
     train_end : last date of training period (inclusive, ISO format)
     val_end   : last date of validation period (inclusive, ISO format)
 
@@ -48,36 +47,26 @@ def load_returns_wide(
                    Values are normalised log returns.  Missing entries are NaN.
     returns_std  : float  std used for normalisation (denormalise by * this)
     """
-    prices_path = Path(data_dir) / "cleaned" / "fechamentos_ibx.csv"
+    prices_path = Path(data_dir) / "parquets" / "prices.parquet"
     if not prices_path.exists():
         raise FileNotFoundError(f"Prices file not found: {prices_path}")
 
     # ------------------------------------------------------------------ load
-    df = pd.read_csv(
-        prices_path,
-        sep=";",
-        decimal=",",
-        parse_dates=["DATES"],
-        dayfirst=True,
-    )
-    df.rename(columns={"DATES": "date"}, inplace=True)
+    df = pd.read_parquet(prices_path, engine="pyarrow")
     df["date"] = pd.to_datetime(df["date"])
-    df.sort_values("date", inplace=True)
-    df.set_index("date", inplace=True)
+    df = df.sort_values(["ticker", "date"])
 
-    # Ensure numeric (column values might be strings with comma already removed)
-    for col in df.columns:
-        if df[col].dtype == object:
-            df[col] = df[col].str.replace(",", ".", regex=False)
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-        else:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+    # --------------------------------------------------- log returns (long)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        df["return"] = df.groupby("ticker")["close"].transform(
+            lambda s: np.log(s / s.shift(1))
+        )
+    df = df.dropna(subset=["return"]).copy()
+    df["return"] = df["return"].replace([np.inf, -np.inf], np.nan)
 
-    # --------------------------------------------------- log returns (wide)
-    prices_wide = df  # (T_prices, N)
-    log_returns = np.log(prices_wide / prices_wide.shift(1))
-    log_returns.replace([np.inf, -np.inf], np.nan, inplace=True)
-    log_returns = log_returns.iloc[1:].copy()   # drop first NaN row
+    # --------------------------------------------------- pivot to wide
+    log_returns = df.pivot(index="date", columns="ticker", values="return")
+    log_returns.sort_index(inplace=True)
 
     # --------------------------------------------------- returns_std from train
     train_end_dt = pd.to_datetime(train_end)

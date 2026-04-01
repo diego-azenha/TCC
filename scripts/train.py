@@ -53,8 +53,8 @@ def parse_args():
     parser.add_argument(
         "--prices_file",
         type=str,
-        default="cleaned/fechamentos_ibx.csv",
-        help="Prices CSV file (relative to data_dir)"
+        default="parquets/prices.parquet",
+        help="Prices parquet file (relative to data_dir)"
     )
     
     # Model hyperparameters
@@ -125,20 +125,14 @@ def main():
     
     # Compute returns std from training data
     print("\nComputing returns normalization std from training data...")
-    df_prices_for_std = pd.read_csv(
-        str(prices_path), 
-        sep=';', 
-        decimal=',',  # Handle European decimal format
-        parse_dates=['DATES'], 
-        dayfirst=True
-    )
-    df_prices_for_std.rename(columns={'DATES': 'date'}, inplace=True)
+    df_prices_for_std = pd.read_parquet(str(prices_path), engine='pyarrow')
+    df_prices_for_std['date'] = pd.to_datetime(df_prices_for_std['date'])
     
     returns_std = compute_returns_std_from_train(
         df_prices_for_std,
         train_end=args.train_end
     )
-    print(f"Returns std: {returns_std:.6f} (paper reports ~0.02672357)")
+    print(f"Returns std: {returns_std:.6f}")
     
     # Create model configuration
     print("\nCreating model configuration...")

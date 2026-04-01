@@ -62,15 +62,21 @@ def generate_summary_report(
     lines.append("3. VALUE AT RISK CALIBRATION")
     lines.append("-" * 80)
     if not var_df.empty:
-        lines.append(f"{'Quantile':<12} {'Theoretical':<15} {'Empirical':<15} {'Error':<10} Quality")
-        lines.append("-" * 65)
+        lines.append(f"{'Quantile':<10} {'Theor.':<10} {'Empir.':<10} {'Error':<10} {'Kupiec p':<12} {'Christ. p':<12} Quality")
+        lines.append("-" * 80)
         for _, row in var_df.iterrows():
             err = row["error"]
             quality = "Good" if err < 0.02 else ("OK" if err < 0.05 else "Poor")
+            kp = f"{row.get('kupiec_p', float('nan')):.4f}"
+            cp = f"{row.get('christoffersen_p', float('nan')):.4f}"
             lines.append(
-                f"{row['quantile']:<12.2f} {row['theoretical']:<15.4f} "
-                f"{row['empirical']:<15.4f} {err:<10.4f} {quality}"
+                f"{row['quantile']:<10.2f} {row['theoretical']:<10.4f} "
+                f"{row['empirical']:<10.4f} {err:<10.4f} {kp:<12} {cp:<12} {quality}"
             )
+        lines.append("")
+        lines.append("Kupiec (1995): H0 = violation rate equals theoretical level")
+        lines.append("Christoffersen (1998): H0 = violations are independent (no clustering)")
+        lines.append("Reject at 5% significance when p-value < 0.05")
     else:
         lines.append("No VaR metrics computed")
     lines.append("")
@@ -84,7 +90,21 @@ def generate_summary_report(
         lines.append(f"Annualized Return:  {backtest_metrics['annualized_return']:.2%}")
         lines.append(f"Annualized Vol:     {backtest_metrics['annualized_vol']:.2%}")
         lines.append(f"Sharpe Ratio:       {backtest_metrics['sharpe_ratio']:.2f}")
+        lines.append(f"Sortino Ratio:      {backtest_metrics.get('sortino_ratio', float('nan')):.2f}")
+        lines.append(f"Calmar Ratio:       {backtest_metrics.get('calmar_ratio', float('nan')):.2f}")
         lines.append(f"Max Drawdown:       {backtest_metrics['max_drawdown']:.2%}")
+        lines.append("")
+        lines.append("Portfolio Characteristics:")
+        lines.append(f"  Avg Turnover/day: {backtest_metrics.get('avg_turnover', float('nan')):.4f}")
+        lines.append(f"  Ann. Turnover:    {backtest_metrics.get('annualized_turnover', float('nan')):.1f}x")
+        lines.append(f"  Avg Max Weight:   {backtest_metrics.get('avg_max_weight', float('nan')):.2%}")
+        lines.append(f"  Avg Effective N:  {backtest_metrics.get('avg_effective_n', float('nan')):.1f}")
+        tc_bps = backtest_metrics.get("transaction_cost_bps", 10)
+        lines.append("")
+        lines.append(f"After Transaction Costs ({tc_bps} bps one-way):")
+        lines.append(f"  Net Total Return: {backtest_metrics.get('total_return_net', float('nan')):.2%}")
+        lines.append(f"  Net Ann. Return:  {backtest_metrics.get('annualized_return_net', float('nan')):.2%}")
+        lines.append(f"  Net Sharpe Ratio: {backtest_metrics.get('sharpe_ratio_net', float('nan')):.2f}")
         if "benchmark_total_return" in backtest_metrics:
             lines.append("")
             lines.append("Benchmark Comparison (Ibovespa):")
@@ -92,6 +112,11 @@ def generate_summary_report(
             lines.append(f"  Sharpe:           {backtest_metrics['benchmark_sharpe']:.2f}")
             lines.append(f"  Excess Return:    {backtest_metrics['excess_return']:.2%}")
             lines.append(f"  Information Ratio:{backtest_metrics['information_ratio']:.2f}")
+        lines.append("")
+        lines.append("Notes:")
+        lines.append("  - Annualised returns use geometric CAGR: (1 + total)^(252/n) - 1")
+        lines.append("  - Sharpe and Sortino use Rf = 0 (risk-free rate not subtracted)")
+        lines.append(f"  - Transaction costs assume {tc_bps} bps proportional cost per one-way turnover")
     else:
         lines.append("No backtest metrics computed")
     lines.append("")

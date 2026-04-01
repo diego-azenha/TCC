@@ -1,0 +1,202 @@
+{
+  "train_period": {
+    "start": "2005-01-04",
+    "end": "2018-12-31"
+  },
+  "feature_order": [
+    "return",
+    "roa",
+    "roe",
+    "margem_bruta",
+    "divida_bruta_ativo",
+    "divida_liq_pl",
+    "pvpa",
+    "ev_ebitda",
+    "preco_lucro",
+    "VIX Index_ret",
+    "MOVE Index_ret",
+    "BRAZIL CDS USD SR 5Y D14 Corp_ret",
+    "BZDIOVRA Index_ret",
+    "USDBRL Curncy_ret",
+    "MXBRSC Index_ret",
+    "MXBRLC Index_ret",
+    "MXBR000V Index_ret",
+    "IDIV Index_ret",
+    "MLCXBV Index_ret",
+    "MU702608 Index_ret",
+    "BZRFIMAB Index_ret",
+    "BZRFIMA Index_ret",
+    "SPUHYBDT Index_ret",
+    "BCOMAGTR Index_ret",
+    "BCOMGCTR Index_ret",
+    "BCOMINTR Index_ret",
+    "BCOMNGTR Index_ret",
+    "BCOMSITR Index_ret",
+    "BCOMCOT Index_ret",
+    "MXEF Index_ret",
+    "MXCN Index_ret",
+    "MXJP Index_ret",
+    "MXGB Index_ret",
+    "MXCA Index_ret",
+    "MXEU Index_ret",
+    "MXLA Index_ret",
+    "MXPCJ Index_ret",
+    "MXUS Index_ret"
+  ],
+  "returns_std": 0.054465362341673866,
+  "fundamental_stats": {
+    "roa": {
+      "mean": 0.46202635371750506,
+      "std": 21.759149627894256
+    },
+    "roe": {
+      "mean": 6.625093991157977,
+      "std": 31.740220908292
+    },
+    "margem_bruta": {
+      "mean": 33.78568990553001,
+      "std": 26.955078710510396
+    },
+    "divida_bruta_ativo": {
+      "mean": 33.15913787846483,
+      "std": 55.472658125766976
+    },
+    "divida_liq_pl": {
+      "mean": 44.49615055084265,
+      "std": 151.58383797893745
+    },
+    "pvpa": {
+      "mean": 2.137639069131323,
+      "std": 3.163403807647833
+    },
+    "ev_ebitda": {
+      "mean": 6.323477316591406,
+      "std": 23.64208323629927
+    },
+    "preco_lucro": {
+      "mean": 11.500709138638452,
+      "std": 42.194266559630364
+    }
+  },
+  "index_stats": {
+    "VIX Index_ret": {
+      "mean": 0.00023509932419514288,
+      "std": 0.07388843337328396
+    },
+    "MOVE Index_ret": {
+      "mean": -0.00014851280614205172,
+      "std": 0.04014946464422655
+    },
+    "BRAZIL CDS USD SR 5Y D14 Corp_ret": {
+      "mean": -1.581314666378695e-05,
+      "std": 0.036649261432457746
+    },
+    "BZDIOVRA Index_ret": {
+      "mean": -0.000278755390719211,
+      "std": 0.008186930559141081
+    },
+    "USDBRL Curncy_ret": {
+      "mean": 0.0001103733971293163,
+      "std": 0.010728058654295708
+    },
+    "MXBRSC Index_ret": {
+      "mean": 0.00026332312412019696,
+      "std": 0.01982002711971088
+    },
+    "MXBRLC Index_ret": {
+      "mean": 0.00021696288951691096,
+      "std": 0.02356123478284258
+    },
+    "MXBR000V Index_ret": {
+      "mean": 0.00030440657819235566,
+      "std": 0.018371749048899398
+    },
+    "IDIV Index_ret": {
+      "mean": 0.0002287889511998999,
+      "std": 0.020834440727787753
+    },
+    "MLCXBV Index_ret": {
+      "mean": 0.00039507741287108994,
+      "std": 0.017382534175611093
+    },
+    "MU702608 Index_ret": {
+      "mean": 0.00022120455597068506,
+      "std": 0.020839764254122428
+    },
+    "BZRFIMAB Index_ret": {
+      "mean": 0.000520159519872422,
+      "std": 0.004158789425126307
+    },
+    "BZRFIMA Index_ret": {
+      "mean": 0.0004754924829673347,
+      "std": 0.0019513334392907387
+    },
+    "SPUHYBDT Index_ret": {
+      "mean": 0.00024004213858404966,
+      "std": 0.0025134161123597397
+    },
+    "BCOMAGTR Index_ret": {
+      "mean": -0.00013507557292425222,
+      "std": 0.01232977148829314
+    },
+    "BCOMGCTR Index_ret": {
+      "mean": 0.0002828576293465966,
+      "std": 0.011589212847874095
+    },
+    "BCOMINTR Index_ret": {
+      "mean": -4.821285195916604e-05,
+      "std": 0.015115062482120198
+    },
+    "BCOMNGTR Index_ret": {
+      "mean": -0.0011370727831089892,
+      "std": 0.02644647085980296
+    },
+    "BCOMSITR Index_ret": {
+      "mean": 0.0002005927081456599,
+      "std": 0.02075414216693305
+    },
+    "BCOMCOT Index_ret": {
+      "mean": -9.023192608726457e-06,
+      "std": 0.020014472922844372
+    },
+    "MXEF Index_ret": {
+      "mean": 0.00010151877053935093,
+      "std": 0.012811839838834101
+    },
+    "MXCN Index_ret": {
+      "mean": 0.00013974103080584749,
+      "std": 0.01735441924285331
+    },
+    "MXJP Index_ret": {
+      "mean": 2.8795674582512843e-05,
+      "std": 0.01409136058897359
+    },
+    "MXGB Index_ret": {
+      "mean": 6.58637631102779e-05,
+      "std": 0.011603044952658882
+    },
+    "MXCA Index_ret": {
+      "mean": 0.00015007973803344646,
+      "std": 0.011270003422300766
+    },
+    "MXEU Index_ret": {
+      "mean": 5.5619658407604144e-05,
+      "std": 0.011986649729570675
+    },
+    "MXLA Index_ret": {
+      "mean": 0.0001868652821394745,
+      "std": 0.018682215697263527
+    },
+    "MXPCJ Index_ret": {
+      "mean": 6.568702893530796e-05,
+      "std": 0.013752615789964884
+    },
+    "MXUS Index_ret": {
+      "mean": 0.00022514466983990217,
+      "std": 0.012029129460616713
+    }
+  },
+  "d_ts": 38,
+  "n_tickers_total": 956,
+  "n_tickers_train": 841
+}

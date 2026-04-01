@@ -9,10 +9,9 @@ Replication and adaptation of "NeuralFactors: A Novel Factor Learning Approach t
 ```
 TCC/
 ├── data/
-│   ├── _raw_data/          # Raw data from LSEG Refinitiv/FRED
-│   ├── cleaned/            # Cleaned and normalized data
+│   ├── ibovespa.csv        # Ibovespa benchmark daily returns
 │   ├── parquets/           # Parquet format for efficient loading
-│   └── processing/         # Data cleaning scripts
+│   └── data_documentation.md
 ├── src/
 │   ├── models/             # Core NeuralFactors model components
 │   │   ├── stock_embedder.py    # Stock feature encoder
@@ -115,7 +114,7 @@ EncoderConfig:    jitter_multiplier=2.0, use_fp64=True
 
 ## Data Pipeline
 
-Data is loaded from `data/parquets/` (long format: `date`, `ticker`, feature columns) and `data/cleaned/` (semicolon-delimited CSV, comma decimals). Key steps in `src/utils/data_utils.py`:
+Data is loaded from `data/parquets/` (long format: `date`, `ticker`, feature columns). Key steps in `src/utils/data_utils.py`:
 
 1. **`load_parquets()`** — loads time-series features, static features, and closing prices
 2. **`compute_returns()`** — computes log returns; `±Inf` from zero/negative prices are replaced with `NaN` for proper masking
@@ -165,8 +164,8 @@ Implemented in `scripts/test.py`. Four metrics match the paper's evaluation prot
 |---|---|
 | **NLL** | Joint and per-stock negative log-likelihood via IWAE |
 | **Covariance MSE** | Predicted vs. 20-day empirical rolling covariance |
-| **VaR calibration** | Theoretical vs. empirical violation rates at 1%, 5%, 10% |
-| **Portfolio backtest** | Min-variance portfolio: return, vol, Sharpe, max drawdown |
+| **VaR calibration** | Theoretical vs. empirical violation rates at 1%, 5%, 10%; Kupiec (1995) POF test and Christoffersen (1998) conditional coverage test |
+| **Portfolio backtest** | Min-variance portfolio: return (CAGR), vol, Sharpe, Sortino, Calmar, max drawdown, turnover, concentration, net-of-TC Sharpe |
 
 ```bash
 # Debug mode (first 50 dates, ~5 min)
@@ -177,6 +176,22 @@ python scripts/test.py --checkpoint checkpoints/neuralfactors/last.ckpt --mode p
 ```
 
 Results are saved to `results/evaluation/neuralfactors/` (metrics CSVs, time-series, plots, and a human-readable `evaluation_summary.txt`).
+
+### Portfolio Backtest Details
+
+The portfolio backtest computes daily min-variance weights from the model-predicted covariance matrix, then realises returns on the next trading day using only tickers common to both days.
+
+**Metrics reported:**
+- **Performance**: Total return, annualised return (geometric CAGR), annualised volatility, Sharpe ratio (Rf=0), Sortino ratio, Calmar ratio, max drawdown
+- **Portfolio characteristics**: Average daily turnover, annualised turnover, average max weight, average effective N (1/HHI)
+- **After transaction costs**: Net return and Sharpe assuming 10 bps proportional cost per one-way turnover
+- **Benchmark comparison**: Ibovespa total return, annualised return, Sharpe, excess return, information ratio
+
+### VaR Statistical Tests
+
+Beyond simple violation-rate error, VaR calibration includes:
+- **Kupiec (1995)**: Likelihood-ratio test for whether the empirical violation rate equals the theoretical level
+- **Christoffersen (1998)**: Tests that violations are independent (no clustering), important for risk management
 
 ---
 
@@ -216,8 +231,8 @@ Output (in `results/comparison/`):
 |---|---|
 | `comparison_nll.csv` | NLL mean and std per model |
 | `comparison_cov.csv` | Covariance MSE mean and std per model |
-| `comparison_var.csv` | VaR error and empirical violation rates |
-| `comparison_portfolio.csv` | Return, vol, Sharpe, max drawdown |
+| `comparison_var.csv` | VaR error, empirical violation rates, Kupiec/Christoffersen p-values |
+| `comparison_portfolio.csv` | Return, vol, Sharpe, Sortino, Calmar, turnover, max drawdown, net Sharpe |
 | `comparison_formatted.csv` | Paper Table 2 style (one row per model) |
 
 ---

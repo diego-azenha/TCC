@@ -74,14 +74,14 @@ def load_model_and_data(checkpoint_path, data_dir, split="test"):
     print(f"Loading {split} dataset...")
     x_ts_file = Path(data_dir) / "parquets" / "x_ts.parquet"
     x_static_file = Path(data_dir) / "parquets" / "x_static.parquet"
-    prices_file = Path(data_dir) / "cleaned" / "fechamentos_ibx.csv"
+    prices_file = Path(data_dir) / "parquets" / "prices.parquet"
     
     # Compute returns_std from training data for normalization
     if split in ['val', 'test']:
         import pandas as pd
         from src.utils.data_utils import compute_returns_std_from_train
-        df_prices = pd.read_csv(prices_file, sep=';', decimal=',', parse_dates=['DATES'], dayfirst=True)
-        df_prices.rename(columns={'DATES': 'date'}, inplace=True)
+        df_prices = pd.read_parquet(prices_file, engine='pyarrow')
+        df_prices['date'] = pd.to_datetime(df_prices['date'])
         returns_std = compute_returns_std_from_train(df_prices, train_end=train_end_date)
         print(f"Returns std from training data: {returns_std:.6f}")
     else:

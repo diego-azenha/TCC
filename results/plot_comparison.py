@@ -58,7 +58,7 @@ _RETURNS_CANDIDATES = [
 ]
 
 # Ibovespa benchmark path (relative to data_dir)
-_IBOV_PATH = "cleaned/ibovespa.csv"
+_IBOV_PATH = "ibovespa.csv"
 
 
 # ---------------------------------------------------------------------------

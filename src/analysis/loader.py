@@ -51,10 +51,9 @@ def load_model_and_data(checkpoint_path, data_dir, split='test'):
         print(f"✓ Split dates from config: train_end={train_end}, val_end={val_end}")
     else:
         print("Config not found, computing returns_std from training data...")
-        prices_file = Path(data_dir) / "cleaned" / "fechamentos_ibx.csv"
-        df_prices = pd.read_csv(prices_file, sep=';', decimal=',',
-                                parse_dates=['DATES'], dayfirst=True)
-        df_prices.rename(columns={'DATES': 'date'}, inplace=True)
+        prices_file = Path(data_dir) / "parquets" / "prices.parquet"
+        df_prices = pd.read_parquet(prices_file, engine='pyarrow')
+        df_prices['date'] = pd.to_datetime(df_prices['date'])
         returns_std = compute_returns_std_from_train(df_prices, train_end="2018-12-31")
         lookback    = model.model_config.lookback
         train_end   = "2018-12-31"
@@ -65,7 +64,7 @@ def load_model_and_data(checkpoint_path, data_dir, split='test'):
     print(f"Loading {split} dataset...")
     x_ts_file = Path(data_dir) / "parquets" / "x_ts.parquet"
     x_static_file = Path(data_dir) / "parquets" / "x_static.parquet"
-    prices_file = Path(data_dir) / "cleaned" / "fechamentos_ibx.csv"
+    prices_file = Path(data_dir) / "parquets" / "prices.parquet"
 
     dataset = NeuralFactorsDataset(
         x_ts_path=str(x_ts_file),
