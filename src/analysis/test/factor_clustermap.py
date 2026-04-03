@@ -122,8 +122,17 @@ def load_sector_mapping(data_dir):
 
 # ── Main function ─────────────────────────────────────────────────────────────
 
-def plot_factor_clustermap(model, dataset, output_dir, snapshot_date=None, data_dir="data"):
-    """Bi-clustered heatmap of factor exposures from a single cross-sectional snapshot."""
+def plot_factor_clustermap(
+    model, dataset, output_dir, snapshot_date=None, data_dir="data",
+    top_stocks=50, top_factors=20,
+):
+    """Bi-clustered heatmap of factor exposures from a single cross-sectional snapshot.
+
+    Rows are filtered to the ``top_stocks`` most active names ranked by the L2 norm
+    of their β vector (highest total factor-loading magnitude).  Columns are filtered
+    to the ``top_factors`` factors with the highest cross-sectional loading variance.
+    Both filters remove noise from near-zero rows / dead factors before clustering.
+    """
     print("Computing factor exposure clustermap (single-day snapshot)...")
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -136,10 +145,28 @@ def plot_factor_clustermap(model, dataset, output_dir, snapshot_date=None, data_
         print("Not enough valid stocks for clustermap. Skipping.")
         return
 
+    # ── Column filter: top factors by cross-sectional loading variance ──────
+    col_var = beta_valid.var(axis=0)                    # [F]
+    top_factor_idx = np.argsort(col_var)[::-1][:top_factors]
+    top_factor_idx = np.sort(top_factor_idx)            # keep original order for labelling
+    beta_filtered = beta_valid[:, top_factor_idx]       # [N, top_factors]
+    print(f"Keeping top {top_factors} factors by cross-sectional variance "
+          f"(min kept var={col_var[top_factor_idx].min():.4f})")
+
+    # ── Row filter: top stocks by L2 norm of β (factor-loading magnitude) ───
+    l2_norms = np.linalg.norm(beta_filtered, axis=1)    # [N]
+    n_keep = min(top_stocks, N_valid)
+    top_stock_idx = np.argsort(l2_norms)[::-1][:n_keep]
+    top_stock_idx_sorted = top_stock_idx[np.argsort(top_stock_idx)]  # stable order for sectors
+    beta_filtered = beta_filtered[top_stock_idx_sorted]
+    tickers_filtered = [tickers_valid[i] for i in top_stock_idx_sorted]
+    print(f"Keeping top {n_keep} stocks by β L2 norm "
+          f"(min kept norm={l2_norms[top_stock_idx_sorted].min():.4f})")
+
     ticker_to_sector_id, sector_id_to_name = load_sector_mapping(data_dir)
 
     sector_indices = np.array([
-        ticker_to_sector_id.get(t.split('.')[0], -1) for t in tickers_valid
+        ticker_to_sector_id.get(t.split('.')[0], -1) for t in tickers_filtered
     ])
     unique_sectors = sorted(set(sector_indices))
     cmap_tab = plt.get_cmap('tab10')
@@ -149,9 +176,9 @@ def plot_factor_clustermap(model, dataset, output_dir, snapshot_date=None, data_
     }
 
     beta_df = pd.DataFrame(
-        beta_valid,
-        index=[t.split('.')[0] for t in tickers_valid],
-        columns=[str(f) for f in range(beta_valid.shape[1])],
+        beta_filtered,
+        index=[t.split('.')[0] for t in tickers_filtered],
+        columns=[str(f) for f in top_factor_idx],
     )
     row_colors = pd.Series(
         [palette[s] for s in sector_indices],
@@ -159,7 +186,8 @@ def plot_factor_clustermap(model, dataset, output_dir, snapshot_date=None, data_
         name='Setor',
     )
 
-    height = max(8, N_valid * 0.18)
+    # Fixed height based on filtered row count; 0.28 in/row is enough to read tickers
+    height = max(10, n_keep * 0.28 + 3)
     g = sns.clustermap(
         beta_df,
         method='ward',
@@ -170,18 +198,19 @@ def plot_factor_clustermap(model, dataset, output_dir, snapshot_date=None, data_
         row_colors=row_colors,
         col_cluster=True,
         row_cluster=True,
-        xticklabels=False,
+        xticklabels=True,
         yticklabels=True,
         figsize=(14, height),
         dendrogram_ratio=(0.15, 0.10),
         colors_ratio=0.03,
         cbar_pos=(0.02, 0.85, 0.03, 0.12),
     )
-    g.ax_heatmap.set_xlabel('Fatores', fontsize=11)
+    g.ax_heatmap.set_xlabel('Fatores (top por variância cross-sectional)', fontsize=11)
     g.ax_heatmap.set_ylabel('')
-    g.ax_heatmap.tick_params(axis='y', labelsize=7)
+    g.ax_heatmap.tick_params(axis='y', labelsize=8)
+    g.ax_heatmap.tick_params(axis='x', labelsize=7, rotation=90)
     g.fig.suptitle(
-        f'Factor Exposures — Clustermap Cross-Sectional Snapshot\n{str(target_date)[:10]}',
+        f'Factor Exposures — Top {n_keep} Stocks × Top {top_factors} Factors\n{str(target_date)[:10]}',
         fontsize=13, fontweight='bold', y=1.01,
     )
 

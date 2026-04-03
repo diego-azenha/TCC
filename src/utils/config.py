@@ -154,6 +154,10 @@ class TrainingConfig:
     use_polyak: bool = True
     polyak_start_step: int = 8_645  # When to start Polyak averaging (halfway through training)
     polyak_alpha: float = 0.999  # EMA decay rate (not specified in paper, common default)
+
+    # Posterior collapse prevention
+    prior_lr_scale: float = 0.1    # Prior param LR = learning_rate * prior_lr_scale (10x slower)
+    free_bits_lambda: float = 0.0  # Min KL floor per factor in nats; 0 = disabled
     
     # Paths
     checkpoint_dir: str = "checkpoints"
@@ -185,6 +189,10 @@ class TrainingConfig:
             raise ValueError(f"polyak_start_step must be < max_steps")
         if not 0.0 < self.polyak_alpha < 1.0:
             raise ValueError(f"polyak_alpha must be in (0, 1), got {self.polyak_alpha}")
+        if not 0.0 < self.prior_lr_scale <= 1.0:
+            raise ValueError(f"prior_lr_scale must be in (0, 1], got {self.prior_lr_scale}")
+        if self.free_bits_lambda < 0.0:
+            raise ValueError(f"free_bits_lambda must be >= 0, got {self.free_bits_lambda}")
 
 
 def get_default_config(d_ts: int, d_static: int) -> tuple[ModelConfig, PriorConfig, EncoderConfig]:

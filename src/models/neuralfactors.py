@@ -120,7 +120,8 @@ class NeuralFactors(nn.Module):
         S_static: torch.Tensor,
         r: torch.Tensor,
         num_samples: int,
-        mask: Optional[torch.Tensor] = None
+        mask: Optional[torch.Tensor] = None,
+        free_bits_lambda: float = 0.0,
     ) -> Dict[str, torch.Tensor]:
         """Compute CIWAE loss for training (Paper Equation 7).
         
@@ -194,13 +195,45 @@ class NeuralFactors(nn.Module):
         # Use log-sum-exp for numerical stability
         log_mean_weight = torch.logsumexp(log_weights, dim=1) - math.log(num_samples)  # [batch]
         iwae_loss = -torch.mean(log_mean_weight)  # scalar
-        
+
+        # Free bits: add a penalty that pushes per-factor KL above the floor lambda.
+        # Prior params are detached so the gradient only flows through the encoder
+        # (mu_q, L_q). The IWAE log_p_z term already provides correct gradients to
+        # the prior — giving it a second signal here would create a perverse incentive
+        # for sigma_z to shrink in order to inflate KL and satisfy the floor.
+        free_bits_penalty = torch.zeros(1, device=mu_q.device, dtype=torch.float32)
+        kl_approx_per_factor = None
+        if free_bits_lambda > 0.0:
+            mu_z_mm, Sigma_z_mm = self.prior.to_normal_params()
+            # Detach prior params — penalty is encoder-only
+            prior_var = torch.diag(Sigma_z_mm).float().detach()   # [F]
+            mu_z_mm_f = mu_z_mm.float().detach()                  # [F]
+
+            # L_q is lower-triangular, so diag(Σ_q) = row-norms²(L_q)
+            var_q = (L_q.float() ** 2).sum(dim=-1)                # [batch, F]
+            mu_q_f = mu_q.float()                                  # [batch, F]
+
+            # Gaussian KL(q || moment-matched prior), per factor
+            kl_approx = 0.5 * (
+                var_q / prior_var
+                + (mu_q_f - mu_z_mm_f) ** 2 / prior_var
+                - 1.0
+                + torch.log(prior_var)
+                - torch.log(var_q)
+            )  # [batch, F]
+
+            free_bits_penalty = torch.clamp(free_bits_lambda - kl_approx, min=0.0).sum(dim=-1).mean()
+            iwae_loss = iwae_loss + free_bits_penalty
+
+            with torch.no_grad():
+                kl_approx_per_factor = kl_approx.mean(dim=0)  # [F]
+
         # Diagnostics
         with torch.no_grad():
             log_likelihood = torch.mean(log_p_r_given_z)
             kl_divergence = torch.mean(log_q_z - log_p_z)
-        
-        return {
+
+        result = {
             'loss': iwae_loss,
             'log_likelihood': log_likelihood,
             'kl_divergence': kl_divergence,
@@ -208,7 +241,11 @@ class NeuralFactors(nn.Module):
             'alpha': alpha.detach(),
             'sigma': sigma.detach(),
             'nu': nu.detach(),
+            'free_bits_penalty': free_bits_penalty.detach(),
         }
+        if kl_approx_per_factor is not None:
+            result['kl_approx_per_factor'] = kl_approx_per_factor
+        return result
     
     def predict(
         self,

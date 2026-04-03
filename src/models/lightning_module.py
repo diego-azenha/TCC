@@ -80,7 +80,8 @@ class NeuralFactorsLightning(pl.LightningModule):
             S_static=S_static,
             r=r,
             num_samples=self.training_config.num_iwae_samples,
-            mask=mask
+            mask=mask,
+            free_bits_lambda=self.training_config.free_bits_lambda,
         )
         
         loss = output['loss']
@@ -91,6 +92,12 @@ class NeuralFactorsLightning(pl.LightningModule):
         self.log('train/loss', loss, on_step=True, on_epoch=True, prog_bar=True)
         self.log('train/log_likelihood', log_likelihood, on_step=True, on_epoch=True)
         self.log('train/kl_divergence', kl_divergence, on_step=True, on_epoch=True)
+
+        # Free bits diagnostics
+        if self.training_config.free_bits_lambda > 0.0:
+            self.log('train/free_bits_penalty', output['free_bits_penalty'], on_step=True, on_epoch=False)
+            if 'kl_approx_per_factor' in output:
+                self.log('train/kl_approx_min_factor', output['kl_approx_per_factor'].min(), on_step=True, on_epoch=False)
         
         # Compute effective sample size from importance weights
         log_weights = output['log_weights']  # [batch, K]
@@ -163,11 +170,21 @@ class NeuralFactorsLightning(pl.LightningModule):
         return loss
     
     def configure_optimizers(self):
-        """Configure Adam optimizer with weight decay (paper Section 3.5)."""
+        """Configure Adam optimizer with two param groups (paper Section 3.5).
+
+        Prior parameters (mu_z, log_sigma_z, log_nu_z_minus_4) use a scaled-down
+        learning rate to prevent sigma_z from collapsing faster than the encoder
+        can adapt.  All other parameters use the standard learning rate.
+        """
+        prior_params = list(self.model.prior.parameters())
+        prior_ids = {id(p) for p in prior_params}
+        other_params = [p for p in self.model.parameters() if id(p) not in prior_ids]
         optimizer = torch.optim.Adam(
-            self.model.parameters(),
-            lr=self.training_config.learning_rate,
-            weight_decay=self.training_config.weight_decay
+            [
+                {'params': other_params, 'lr': self.training_config.learning_rate},
+                {'params': prior_params,  'lr': self.training_config.learning_rate * self.training_config.prior_lr_scale},
+            ],
+            weight_decay=self.training_config.weight_decay,
         )
         return optimizer
     

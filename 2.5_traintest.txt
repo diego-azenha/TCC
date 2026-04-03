@@ -1,0 +1,614 @@
+.venv) PS M:\Python Projects\TCC (new)> python scripts/run.py --experiment_name neuralfactors_v2.5 --max_steps 250000 --prior_lr_scale 0.1 --free_bits_lambda 0.2
+
+================================================================================
+PHASE 1 — TRAINING
+================================================================================
+Command: M:\Python Projects\TCC (new)\.venv\Scripts\python.exe M:\Python Projects\TCC (new)\scripts\train.py --experiment_name neuralfactors_v2.5 --data_dir data --checkpoint_dir checkpoints --log_dir logs --seed 42 --num_factors 64 --hidden_size 256 --lookback 256 --dropout 0.25 --learning_rate 0.0001 --weight_decay 1e-06 --num_iwae_samples 20 --max_steps 250000 --val_every_n_steps 100000 --polyak_alpha 0.999 --prior_lr_scale 0.1 --free_bits_lambda 0.2 --train_end 2018-12-31 --val_end 2022-12-31 --gpus 1
+
+Seed set to 42
+================================================================================
+NeuralFactors Training
+================================================================================
+
+Discovering feature dimensions...
+Feature dimensions: d_ts=41, d_static=11
+
+Computing returns normalization std from training data...
+Returns std: 0.054465
+
+Creating model configuration...
+Saved configuration to checkpoints\neuralfactors_v2.5\config.json
+
+================================================================================
+Loading Datasets
+================================================================================
+
+Training dataset:
+Loading data for train split...
+Computing returns...
+Computing returns std from training data...
+Training returns std: 0.054465
+Normalizing returns by std=0.054465
+Splitting data: train_end=2018-12-31, val_end=2022-12-31
+Dataset train: 3458 trading days, d_ts=41, d_static=11
+
+Validation dataset:
+Loading data for val split...
+Computing returns...
+Normalizing returns by std=0.054465
+Splitting data: train_end=2018-12-31, val_end=2022-12-31
+Dataset val: 994 trading days, d_ts=41, d_static=11
+
+DataLoaders created:
+  Train: 3458 batches
+  Val: 994 batches
+  Max steps: 250,000 → 73 epochs
+  Max steps: 250,000 → 73 epochs
+
+================================================================================
+Initializing Model
+================================================================================
+
+Model parameters: 1,742,020
+Trainable parameters: 1,742,020
+
+================================================================================
+Starting Training
+================================================================================
+Using GPU: NVIDIA GeForce RTX 3060
+Using 16bit Automatic Mixed Precision (AMP)
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+💡 Tip: For seamless cloud logging and experiment tracking, try installing [litlogger](https://pypi.org/project/litlogger/) to enable LitLogger, which logs metrics and artifacts automatically to the Lightning Experiments platform.
+M:\Python Projects\TCC (new)\.venv\Lib\site-packages\pytorch_lightning\callbacks\model_checkpoint.py:881: Checkpoint directory M:\Python Projects\TCC (new)\checkpoints\neuralfactors_v2.5 exists and is not 
+empty.
+LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0]
+M:\Python Projects\TCC (new)\.venv\Lib\site-packages\pytorch_lightning\utilities\model_summary\model_summary.py:242: Precision 16-mixed is not supported by the model summary.  Estimated model size in MB will not be accurate. Using 32 bits instead.
+┏━━━┳━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━┳━━━━━━━┓
+┃   ┃ Name  ┃ Type          ┃ Params ┃ Mode  ┃ FLOPs ┃
+┡━━━╇━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━╇━━━━━━━┩
+│ 0 │ model │ NeuralFactors │  1.7 M │ train │     0 │
+└───┴───────┴───────────────┴────────┴───────┴───────┘
+Trainable params: 1.7 M
+Non-trainable params: 0
+Total params: 1.7 M
+Total estimated model params size (MB): 6
+Modules in train mode: 33
+Modules in eval mode: 0
+Total FLOPs: 0
+
+Initializing Polyak averaging at step 125000
+Epoch 72/72 ━━━━━━━━━━━╸━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1024/3458 0:02:21 • 0:05:35 7.27it/s v_num: 0.000 train/loss_step: -932.741 train/loss_epoch: -773.792`Trainer.fit` stopped: `max_steps=250000` reached.Epoch 72/72 ━━━━━━━━━━━╸━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1024/3458 0:02:23 • 0:05:35 7.27it/s v_num: 0.000 train/loss_step: -932.741 train/loss_epoch: -773.792
+
+================================================================================
+Training Complete!
+================================================================================
+
+Best model checkpoint: M:\Python Projects\TCC (new)\checkpoints\neuralfactors_v2.5\neuralfactors-step=248976-train/loss_epoch=-774.1455.ckpt
+Best validation loss: -774.1455
+Saved Polyak-averaged model to checkpoints\neuralfactors_v2.5\polyak_model.pt
+
+================================================================================
+Running Automatic Analysis
+================================================================================
+Running analysis: M:\Python Projects\TCC (new)\.venv\Scripts\python.exe M:\Python Projects\TCC (new)\src\analysis\analyze.py --checkpoint M:\Python Projects\TCC (new)\checkpoints\neuralfactors_v2.5\neuralfactors-step=248976-train/loss_epoch=-774.1455.ckpt --data_dir data --output_dir results\training_analysis\neuralfactors_v2.5 --split test
+Loading model from M:\Python Projects\TCC (new)\checkpoints\neuralfactors_v2.5\neuralfactors-step=248976-train/loss_epoch=-774.1455.ckpt...
+Model config: lookback=256, train_end=2018-12-31, val_end=2022-12-31
+Loading test dataset...
+Returns std from training data: 0.054465
+Loading data for test split...
+Computing returns...
+Normalizing returns by std=0.054465
+Splitting data: train_end=2018-12-31, val_end=2022-12-31
+Dataset test: 807 trading days, d_ts=41, d_static=11
+
+============================================================
+NeuralFactors Model Analysis
+============================================================
+
+Plotting loss curves...
+Reading TensorBoard logs from: logs\neuralfactors_v2.5\version_0  (1 versions found, using latest)
+Saved training curves to: results\training_analysis\neuralfactors_v2.5\training_curves.png
+Analyzing prior parameters...
+
+Prior Parameters:
+Nu_z (degrees of freedom): 12.4177
+Sigma_z: mean=5.0193, std=0.0079
+Mu_z: mean=0.0003, std=0.0063
+Analyzing factor exposures...
+Factor analysis plots saved to results\training_analysis\neuralfactors_v2.5
+
+============================================================
+Factor Exposure Summary Statistics:
+============================================================
+Beta (Factor Exposures): mean=-0.0001, std=0.0014
+Alpha (Idiosyncratic): mean=-0.0290, std=0.6812
+Sigma (Scale): mean=0.0217, std=0.0572
+Nu (Degrees of Freedom): mean=9.8779, std=0.1202
+
+============================================================
+Analysis complete! Plots saved to: results\training_analysis\neuralfactors_v2.5
+============================================================
+
+
+Analysis complete! Plots saved to: results\training_analysis\neuralfactors_v2.5
+
+Training completed in 9.41h
+
+================================================================================
+PHASE 2 — EVALUATION
+================================================================================
+Checkpoint : checkpoints\neuralfactors_v2.5\polyak_model.pt
+Mode       : paper
+Command    : M:\Python Projects\TCC (new)\.venv\Scripts\python.exe M:\Python Projects\TCC (new)\scripts\test.py --checkpoint checkpoints\neuralfactors_v2.5\polyak_model.pt --data_dir data --output_dir results/evaluation --experiment_name neuralfactors_v2.5 --split test --mode paper --num_samples 100 --seed 42
+
+
+================================================================================
+RUNNING IN PAPER MODE (FULL EVALUATION)
+================================================================================
+- NLL samples: 100 | VaR samples: 1000 | Max dates: All
+================================================================================
+LOADING MODEL AND DATA
+================================================================================
+Using device: cuda
+Loading model from checkpoints\neuralfactors_v2.5\polyak_model.pt...
+✓ Model loaded successfully
+✓ Returns std from config: 0.054465
+✓ Lookback from config: 256
+✓ Split dates from config: train_end=2018-12-31, val_end=2022-12-31
+Loading test dataset...
+Loading data for test split...
+Computing returns...
+Normalizing returns by std=0.054465
+Splitting data: train_end=2018-12-31, val_end=2022-12-31
+Dataset test: 807 trading days, d_ts=41, d_static=11
+✓ Dataset loaded: 807 dates
+✓ Output directories created at: results\evaluation\neuralfactors_v2.5
+
+================================================================================
+COMPUTING NEGATIVE LOG-LIKELIHOOD METRICS
+================================================================================
+Computing NLL: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 807/807 [03:30<00:00,  3.83it/s] 
+
+✓ NLL Computation Complete
+  Dates processed: 807
+  Date range: 2023-01-02 00:00:00 to 2026-03-26 00:00:00
+  Mean NLL_joint: -1332.6589
+  Std NLL_joint:  84.6312
+  Mean NLL_ind:   -3.6895
+  Mean log p(r|z):1338.1492
+  Mean KL:        5.7011
+✓ NLL results saved to: results\evaluation\neuralfactors_v2.5\metrics\nll_timeseries.csv
+✓ NLL plot saved to: results\evaluation\neuralfactors_v2.5\plots\nll_timeseries.png
+  Time elapsed: 211.4s
+
+================================================================================
+COMPUTING COVARIANCE METRICS
+================================================================================
+Rolling window size: 20 days
+Computing Covariance: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 807/807 [03:31<00:00,  3.82it/s] 
+
+✓ Covariance Computation Complete
+  Dates processed: 787
+  Date range: 2023-01-30 00:00:00 to 2026-03-26 00:00:00
+  Mean MSE: 0.000000
+  Std MSE:  0.000001
+✓ Covariance results saved to: results\evaluation\neuralfactors_v2.5\metrics\cov_metrics.csv
+✓ Covariance plot saved to: results\evaluation\neuralfactors_v2.5\plots\cov_mse_timeseries.png
+  Time elapsed: 211.7s
+
+================================================================================
+COMPUTING VALUE AT RISK CALIBRATION
+================================================================================
+Number of samples: 1000
+Pre-computing empirical factor distribution (first 250 test dates)...
+  Factor empirical std (mean across factors): 0.3432
+Computing VaR: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 807/807 [03:34<00:00,  3.77it/s]
+  0.01: empirical=0.0089, error=0.0011 [Good]
+        Kupiec LR=36.577, p=0.0000  REJECT
+        Christoffersen LR=652.670, p=0.0000  REJECT
+  0.05: empirical=0.0191, error=0.0309 [OK]
+        Kupiec LR=7583.853, p=0.0000  REJECT
+        Christoffersen LR=1289.295, p=0.0000  REJECT
+  0.10: empirical=0.0281, error=0.0719 [Poor]
+        Kupiec LR=22773.269, p=0.0000  REJECT
+        Christoffersen LR=1592.716, p=0.0000  REJECT
+
+✓ VaR Calibration Complete
+✓ VaR results saved to: results\evaluation\neuralfactors_v2.5\metrics\var_calibration.csv
+✓ VaR plot saved to: results\evaluation\neuralfactors_v2.5\plots\var_calibration.png
+  Time elapsed: 286.0s
+
+================================================================================
+PORTFOLIO BACKTEST
+================================================================================
+Portfolio method: min_variance
+Running Backtest: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 806/806 [07:22<00:00,  1.82it/s] 
+
+✓ Backtest Complete
+  Periods: 806
+  Date range: 2023-01-03 00:00:00 to 2026-03-26 00:00:00
+
+  Benchmark comparison:
+    Ibovespa Ann. Return: 18.04%
+    Excess Return: -14.24%
+    Information Ratio: -1.77
+
+  Performance Metrics:
+    Total Return:        4.69%
+    Annualized Return:   1.44%
+    Annualized Vol:      16.00%
+    Sharpe Ratio:        0.09
+    Sortino Ratio:       0.09
+    Calmar Ratio:        0.05
+    Max Drawdown:        -26.96%
+    Avg Turnover/day:    0.0498
+    Ann. Turnover:       12.5x
+    Avg Max Weight:      0.29%
+    Avg Effective N:     347.5
+    Sharpe (net 10bps):  0.01
+
+✓ Returns saved to: results\evaluation\neuralfactors_v2.5\timeseries\backtest_returns.csv
+✓ Metrics saved to: results\evaluation\neuralfactors_v2.5\metrics\backtest_metrics.json
+✓ Cumulative returns plot saved to: results\evaluation\neuralfactors_v2.5\plots\cumulative_returns.png
+  Time elapsed: 443.6s
+Computing factor exposure clustermap (single-day snapshot)...
+Snapshot date: 2024-08-13  |  Valid stocks: 365
+Keeping top 20 factors by cross-sectional variance (min kept var=0.0000)
+Keeping top 50 stocks by β L2 norm (min kept norm=0.0014)
+Clustermap saved to: results\evaluation\neuralfactors_v2.5\plots\factor_exposures_heatmap.png
+Computing factor exposure t-SNE (single-day snapshot)...
+Snapshot date: 2024-08-13  |  Valid stocks: 365
+Loaded sector mapping: 1419 tickers, 11 sectors
+t-SNE snapshot saved to: results\evaluation\neuralfactors_v2.5\plots\factor_exposures_tsne.png
+  Time elapsed: 5.9s
+
+================================================================================
+GENERATING SUMMARY REPORT
+================================================================================
+
+✓ Summary report saved to: results\evaluation\neuralfactors_v2.5\evaluation_summary.txt
+
+================================================================================
+NEURALFACTORS MODEL EVALUATION SUMMARY
+================================================================================
+Generated: 2026-04-03 12:03:53
+
+--------------------------------------------------------------------------------
+1. NEGATIVE LOG-LIKELIHOOD
+--------------------------------------------------------------------------------
+Dates processed: 807
+Date range: 2023-01-02 00:00:00 to 2026-03-26 00:00:00
+Mean NLL_joint:   -1332.6589 ± 84.6312
+Mean NLL_ind:     -3.6895 ± 0.2168
+Mean log p(r|z):  1338.1492
+Mean KL:          5.7011
+
+--------------------------------------------------------------------------------
+2. COVARIANCE PREDICTION
+--------------------------------------------------------------------------------
+Dates processed: 787
+Date range: 2023-01-30 00:00:00 to 2026-03-26 00:00:00
+Mean MSE: 0.000000
+Std MSE:  0.000001
+Min MSE:  0.000000
+Max MSE:  0.000005
+
+--------------------------------------------------------------------------------
+3. VALUE AT RISK CALIBRATION
+--------------------------------------------------------------------------------
+Quantile   Theor.     Empir.     Error      Kupiec p     Christ. p    Quality
+--------------------------------------------------------------------------------
+0.01       0.0100     0.0089     0.0011     0.0000       0.0000       Good
+0.05       0.0500     0.0191     0.0309     0.0000       0.0000       OK
+0.10       0.1000     0.0281     0.0719     0.0000       0.0000       Poor
+
+Kupiec (1995): H0 = violation rate equals theoretical level
+Christoffersen (1998): H0 = violations are independent (no clustering)
+Reject at 5% significance when p-value < 0.05
+
+--------------------------------------------------------------------------------
+4. PORTFOLIO BACKTEST (MIN-VARIANCE)
+--------------------------------------------------------------------------------
+Total Return:       4.69%
+Annualized Return:  1.44%
+Annualized Vol:     16.00%
+Sharpe Ratio:       0.09
+Sortino Ratio:      0.09
+Calmar Ratio:       0.05
+Max Drawdown:       -26.96%
+
+Portfolio Characteristics:
+  Avg Turnover/day: 0.0498
+  Ann. Turnover:    12.5x
+  Avg Max Weight:   0.29%
+  Avg Effective N:  347.5
+
+After Transaction Costs (10 bps one-way):
+  Net Total Return: 0.57%
+  Net Ann. Return:  0.18%
+  Net Sharpe Ratio: 0.01
+
+Benchmark Comparison (Ibovespa):
+  Ann. Return:      18.04%
+  Sharpe:           1.16
+  Excess Return:    -14.24%
+  Information Ratio:-1.77
+
+Notes:
+  - Annualised returns use geometric CAGR: (1 + total)^(252/n) - 1
+  - Sharpe and Sortino use Rf = 0 (risk-free rate not subtracted)
+  - Transaction costs assume 10 bps proportional cost per one-way turnover
+
+================================================================================
+END OF REPORT
+================================================================================
+
+================================================================================
+NEURALCFACTORS EVALUATION COMPLETE
+================================================================================
+Total time: 1163.2s (19.4 minutes)
+Results saved to: results\evaluation\neuralfactors_v2.5
+
+================================================================================
+RUNNING PPCA BASELINE EVALUATION
+================================================================================
+
+================================================================================
+RUNNING IN PAPER MODE (FULL EVALUATION)
+================================================================================
+  VaR samples: 1000  |  Max dates: All
+  F = 12  |  Window = 252 days  |  Split = test
+
+================================================================================
+LOADING DATA
+================================================================================
+  Returns shape: (5259, 956)  (dates × tickers)
+  Returns std (train): 0.054465
+  Date range: 2005-01-04 to 2026-03-26
+  Evaluation dates (test): 807
+Output directories created under: results\ppca\ppca
+
+================================================================================
+COMPUTING NEGATIVE LOG-LIKELIHOOD METRICS
+================================================================================
+Computing NLL: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 807/807 [00:16<00:00, 49.39it/s] 
+
+  Dates processed: 751
+  Date range: 2023-01-02 to 2026-03-26
+  Mean NLL_joint: 219.2877
+  Std NLL_joint:  309.0799
+  Mean NLL_ind:   0.7467
+  Saved: results\ppca\ppca\metrics\nll_timeseries.csv
+  Plot saved: results\ppca\ppca\plots\nll_timeseries.png
+  Time elapsed: 17.1s
+
+================================================================================
+COMPUTING COVARIANCE METRICS
+================================================================================
+Empirical window: 20 days  |  Fitting window: 252 days
+Computing Covariance: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 807/807 [00:18<00:00, 44.28it/s] 
+
+  Dates processed: 751
+  Date range: 2023-01-02 to 2026-03-26
+  Mean MSE: 0.000000
+  Std MSE:  0.000001
+  Saved: results\ppca\ppca\metrics\covariance_results.csv
+  Plot saved: results\ppca\ppca\plots\covariance_mse.png
+  Time elapsed: 18.7s
+
+================================================================================
+COMPUTING VALUE AT RISK CALIBRATION
+================================================================================
+Number of samples per date: 1000
+Computing VaR: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 807/807 [00:20<00:00, 40.22it/s] 
+
+  Total stock-day observations: 220702
+  q=0.01: empirical=0.0120  error=0.0020  [Good]
+        Kupiec LR=83.658, p=0.0000  REJECT
+        Christoffersen LR=494.577, p=0.0000  REJECT
+  q=0.05: empirical=0.0327  error=0.0173  [Good]
+        Kupiec LR=1576.917, p=0.0000  REJECT
+        Christoffersen LR=1292.478, p=0.0000  REJECT
+  q=0.10: empirical=0.0596  error=0.0404  [OK]
+        Kupiec LR=4604.465, p=0.0000  REJECT
+        Christoffersen LR=2360.332, p=0.0000  REJECT
+
+  VaR Calibration complete
+  Saved: results\ppca\ppca\metrics\var_calibration.csv
+  Plot saved: results\ppca\ppca\plots\var_calibration.png
+  Time elapsed: 31.1s
+
+================================================================================
+PORTFOLIO BACKTEST
+================================================================================
+Portfolio method: min_variance  |  F = 12  |  Window = 252
+Running Backtest: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 806/806 [11:15<00:00,  1.19it/s] 
+
+  Backtest complete — 806 periods
+  Date range: 2023-01-03 to 2026-03-26
+  Total Return:      19.35%
+  Annualised Return: 5.69%
+  Annualised Vol:    10.42%
+  Sharpe Ratio:      0.55
+  Sortino Ratio:     0.53
+  Calmar Ratio:      0.43
+  Max Drawdown:      -13.13%
+  Avg Turnover/day:  0.0420
+  Ann. Turnover:     10.6x
+  Avg Max Weight:    1.99%
+  Avg Effective N:   108.9
+  Sharpe (net 10bps): 0.44
+  Saved: results\ppca\ppca\metrics\portfolio_returns.csv
+  Plot saved: results\ppca\ppca\plots\cumulative_returns.png
+  Time elapsed: 676.5s
+
+================================================================================
+GENERATING SUMMARY REPORT
+================================================================================
+  Saved: results\ppca\ppca\evaluation_summary.txt
+
+================================================================================
+PPCA MODEL EVALUATION SUMMARY
+================================================================================
+Generated: 2026-04-03 12:16:20
+
+--------------------------------------------------------------------------------
+1. NEGATIVE LOG-LIKELIHOOD
+--------------------------------------------------------------------------------
+Dates processed: 751
+Date range: 2023-01-02 00:00:00 to 2026-03-26 00:00:00
+Mean NLL_joint: 219.2877 ± 309.0799
+Mean NLL_ind:   0.7467 ± 1.0694
+
+--------------------------------------------------------------------------------
+2. COVARIANCE PREDICTION
+--------------------------------------------------------------------------------
+Dates processed: 751
+Date range: 2023-01-02 00:00:00 to 2026-03-26 00:00:00
+Mean MSE: 0.000000
+Std MSE:  0.000001
+Min MSE:  0.000000
+Max MSE:  0.000010
+
+--------------------------------------------------------------------------------
+3. VALUE AT RISK CALIBRATION
+--------------------------------------------------------------------------------
+Quantile   Theor.     Empir.     Error      Kupiec p     Christ. p    Quality
+--------------------------------------------------------------------------------
+0.01       0.0100     0.0120     0.0020     0.0000       0.0000       Good
+0.05       0.0500     0.0327     0.0173     0.0000       0.0000       Good
+0.10       0.1000     0.0596     0.0404     0.0000       0.0000       OK
+
+Kupiec (1995): H0 = violation rate equals theoretical level
+Christoffersen (1998): H0 = violations are independent (no clustering)
+Reject at 5% significance when p-value < 0.05
+
+--------------------------------------------------------------------------------
+4. PORTFOLIO BACKTEST (MIN-VARIANCE)
+--------------------------------------------------------------------------------
+Total Return:       19.35%
+Annualized Return:  5.69%
+Annualized Vol:     10.42%
+Sharpe Ratio:       0.55
+Sortino Ratio:      0.53
+Calmar Ratio:       0.43
+Max Drawdown:       -13.13%
+
+Portfolio Characteristics:
+  Avg Turnover/day: 0.0420
+  Ann. Turnover:    10.6x
+  Avg Max Weight:   1.99%
+  Avg Effective N:  108.9
+
+After Transaction Costs (10 bps one-way):
+  Net Total Return: 15.38%
+  Net Ann. Return:  4.58%
+  Net Sharpe Ratio: 0.44
+
+Benchmark Comparison (Ibovespa):
+  Ann. Return:      18.04%
+  Sharpe:           1.16
+  Excess Return:    -12.36%
+  Information Ratio:-1.32
+
+Notes:
+  - Annualised returns use geometric CAGR: (1 + total)^(252/n) - 1
+  - Sharpe and Sortino use Rf = 0 (risk-free rate not subtracted)
+  - Transaction costs assume 10 bps proportional cost per one-way turnover
+
+================================================================================
+END OF REPORT
+================================================================================
+
+================================================================================
+EVALUATION COMPLETE
+================================================================================
+Total time: 744.9s (12.4 min)
+Results saved to: results\ppca\ppca
+
+================================================================================
+GENERATING CROSS-MODEL COMPARISON
+================================================================================
+
+================================================================================
+MODEL COMPARISON
+================================================================================
+  NeuralFactors             results\evaluation\neuralfactors_v2.5  (found)
+  PPCA                      results\ppca\ppca  (found)
+
+================================================================================
+1. NEGATIVE LOG-LIKELIHOOD
+================================================================================
+        Model  NLL_joint_mean  NLL_joint_std  NLL_ind_mean  NLL_ind_std  dates
+NeuralFactors    -1332.658888      84.631201     -3.689501     0.216836    807
+         PPCA      219.287710     309.079871      0.746689     1.069432    751
+
+================================================================================
+2. COVARIANCE MSE
+================================================================================
+        Model  CovMSE_mean   CovMSE_std  dates
+NeuralFactors 2.481781e-07 7.307725e-07    787
+         PPCA 3.702283e-07 1.397271e-06    751
+
+================================================================================
+3. VALUE AT RISK CALIBRATION
+================================================================================
+        Model  q01pct_error  q01pct_empirical  q05pct_error  q05pct_empirical  q10pct_error  q10pct_empirical
+NeuralFactors      0.001094          0.008906      0.030888          0.019112      0.071916          0.028084
+         PPCA      0.001998          0.011998      0.017304          0.032696      0.040368          0.059632
+
+================================================================================
+4. PORTFOLIO BACKTEST
+================================================================================
+        Model  TotalReturn  AnnReturn   AnnVol   Sharpe  MaxDrawdown  periods
+NeuralFactors     0.046861   0.014421 0.159983 0.090143    -0.269611      806
+         PPCA     0.193455   0.056851 0.104194 0.545630    -0.131331      806
+
+================================================================================
+SUMMARY (paper-style, lower NLL/MSE/VaR-err = better)
+================================================================================
+        Model  NLL_joint NLL_ind   CovMSE VaR_q01_err VaR_q05_err VaR_q10_err Sharpe Ann.Ret MaxDrawdown
+NeuralFactors -1332.6589 -3.6895 0.000000      0.0011      0.0309      0.0719   0.09   1.44%     -26.96%
+         PPCA   219.2877  0.7467 0.000000      0.0020      0.0173      0.0404   0.55   5.69%     -13.13%
+
+================================================================================
+Results saved to: results\comparison
+================================================================================
+
+================================================================================
+FULL EVALUATION PIPELINE COMPLETE
+================================================================================
+Comparison tables saved to: results/comparison/
+
+Evaluation completed in 32.0min
+
+================================================================================
+PIPELINE COMPLETE
+Experiment : neuralfactors_v2.5
+Checkpoint : checkpoints\neuralfactors_v2python results/plot_comparison.py --no_auto --results "NF v2.5 (250k):results/evaluation/neuralfactors_v2.5" --results "NF v2 (50k):results/evaluation/neuralfactors_v2" --results "PPCA:results/ppca/ppca"
+
+======================================================================
+MODEL DISCOVERY & LOADING
+======================================================================
+  [NF v2 (50k)]  806 periods  2023-01-03 → 2026-03-26  Total: +8.86%  Sharpe: 0.17
+  [NF v2.5 (250k)]  806 periods  2023-01-03 → 2026-03-26  Total: +4.69%  Sharpe: 0.09
+  [PPCA]  806 periods  2023-01-03 → 2026-03-26  Total: +19.35%  Sharpe: 0.55
+
+  Ibovespa benchmark loaded: 798 periods
+
+======================================================================
+GENERATING CHART
+======================================================================
+
+  Chart saved to: results\comparison\plots\cumulative_returns_comparison.png
+
+======================================================================
+PERFORMANCE SUMMARY
+======================================================================
+               Model  Periods      Start        End Total Return Sharpe
+Ibovespa (benchmark)      798 2023-01-03 2026-03-16      +69.09%   1.16
+         NF v2 (50k)      806 2023-01-03 2026-03-26       +8.86%   0.17
+      NF v2.5 (250k)      806 2023-01-03 2026-03-26       +4.69%   0.09
+                PPCA      806 2023-01-03 2026-03-26      +19.35%   0.55
+(.venv) PS M:\Python Projects\TCC (new)> 

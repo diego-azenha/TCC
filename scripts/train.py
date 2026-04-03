@@ -71,6 +71,8 @@ def parse_args():
     parser.add_argument("--val_every_n_steps", type=int, default=100_000, help="Validate only at the end")
     parser.add_argument("--polyak_start_step", type=int, default=None, help="Polyak averaging start (default: max_steps // 2)")
     parser.add_argument("--polyak_alpha", type=float, default=0.999, help="Polyak EMA decay")
+    parser.add_argument("--prior_lr_scale", type=float, default=0.1, help="Prior param LR = learning_rate * prior_lr_scale (prevents sigma_z collapse)")
+    parser.add_argument("--free_bits_lambda", type=float, default=0.0, help="Min KL floor per factor in nats; 0 = disabled")
     
     # Data split dates (adjusted for IBX data 2005-2025)
     parser.add_argument("--train_end", type=str, default="2018-12-31", help="Training end date")
@@ -154,6 +156,8 @@ def main():
         val_every_n_steps=args.val_every_n_steps,
         polyak_start_step=args.polyak_start_step,
         polyak_alpha=args.polyak_alpha,
+        prior_lr_scale=args.prior_lr_scale,
+        free_bits_lambda=args.free_bits_lambda,
         checkpoint_dir=str(checkpoint_dir),
         log_dir=args.log_dir,
         seed=args.seed,
@@ -317,7 +321,8 @@ def main():
     print("Training Complete!")
     print("="*80)
     print(f"\nBest model checkpoint: {checkpoint_callback.best_model_path}")
-    print(f"Best validation loss: {checkpoint_callback.best_model_score:.4f}")
+    best_score = checkpoint_callback.best_model_score
+    print(f"Best validation loss: {best_score:.4f}" if best_score is not None else "Best validation loss: N/A (fast_dev_run)")
     
     # Save Polyak model separately if available
     if lightning_module.polyak_model is not None:

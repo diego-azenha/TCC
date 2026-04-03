@@ -52,6 +52,8 @@ from src.analysis import (
     plot_cumulative_returns,
     generate_summary_report,
 )
+from src.analysis.test.factor_clustermap import plot_factor_clustermap
+from src.analysis.test.factor_tsne import plot_factor_tsne
 
 
 def parse_args():
@@ -139,7 +141,13 @@ def main():
             plot_cumulative_returns(returns_df, output_dir, Path(args.data_dir))
         print(f"  Time elapsed: {time.time() - t:.1f}s")
 
-        # 6. Summary report
+        # 6. Factor visualisations (clustermap + t-SNE)
+        t = time.time()
+        plot_factor_clustermap(model, dataset, output_dir / 'plots', data_dir=args.data_dir)
+        plot_factor_tsne(model, dataset, output_dir / 'plots', data_dir=args.data_dir)
+        print(f"  Time elapsed: {time.time() - t:.1f}s")
+
+        # 7. Summary report
         generate_summary_report(output_dir, nll_df, cov_df, var_df, backtest_metrics)
 
         total = time.time() - start_time

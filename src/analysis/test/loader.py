@@ -8,6 +8,8 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.models.lightning_module import NeuralFactorsLightning
+from src.models.neuralfactors import NeuralFactors
+from src.utils.config import ModelConfig, TrainingConfig, PriorConfig, EncoderConfig
 from src.utils.dataset import NeuralFactorsDataset, collate_fn
 from src.utils.data_utils import compute_returns_std_from_train
 
@@ -31,17 +33,43 @@ def load_model_and_data(checkpoint_path, data_dir, split='test'):
     print(f"Using device: {device}")
 
     print(f"Loading model from {checkpoint_path}...")
-    model = NeuralFactorsLightning.load_from_checkpoint(checkpoint_path, strict=False)
-    model.eval()
-    model = model.to(device)
-    print("✓ Model loaded successfully")
+    checkpoint_path = Path(checkpoint_path)
 
-    # Load returns_std, lookback and split dates from saved config or recompute
-    # config.json lives in the experiment dir (parent of the epoch checkpoint subdir)
-    checkpoint_dir = Path(checkpoint_path).parent
+    # config.json lives in the experiment dir (same folder as polyak_model.pt or parent)
+    checkpoint_dir = checkpoint_path.parent
     config_path = checkpoint_dir / "config.json"
     if not config_path.exists():
         config_path = checkpoint_dir.parent / "config.json"
+
+    is_polyak = checkpoint_path.suffix == ".pt"
+    if is_polyak:
+        # polyak_model.pt is a raw NeuralFactors state dict — must load from config
+        if not config_path.exists():
+            raise FileNotFoundError(
+                f"config.json not found near {checkpoint_path}. "
+                "Cannot reconstruct model architecture without it."
+            )
+        with open(config_path, 'r') as f:
+            _cfg = json.load(f)
+        _model_dict = dict(_cfg['model'])
+        # Convert sub-config dicts back to dataclasses
+        if isinstance(_model_dict.get('prior_config'), dict):
+            _model_dict['prior_config'] = PriorConfig(**_model_dict['prior_config'])
+        if isinstance(_model_dict.get('encoder_config'), dict):
+            _model_dict['encoder_config'] = EncoderConfig(**_model_dict['encoder_config'])
+        _mcfg = ModelConfig(**_model_dict)
+        _tcfg = TrainingConfig(**{k: v for k, v in _cfg['training'].items()
+                                  if k in TrainingConfig.__dataclass_fields__})
+        _lightning = NeuralFactorsLightning(model_config=_mcfg, training_config=_tcfg)
+        state_dict = torch.load(checkpoint_path, map_location=device)
+        _lightning.model.load_state_dict(state_dict)
+        model = _lightning
+    else:
+        model = NeuralFactorsLightning.load_from_checkpoint(str(checkpoint_path), strict=False)
+
+    model.eval()
+    model = model.to(device)
+    print("✓ Model loaded successfully")
     if config_path.exists():
         with open(config_path, 'r') as f:
             config = json.load(f)
