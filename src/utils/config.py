@@ -22,7 +22,7 @@ class ModelConfig:
     """
     
     # Core architecture
-    num_factors: int = 64  # F in paper, number of latent factors
+    num_factors: int = 16  # F; 16 for Brazilian equity universe (~95 stocks); paper uses 64 for S&P500
     hidden_size: int = 256  # h in paper, hidden dimension for all layers
     
     # Input dimensions (must be set based on data)
@@ -37,7 +37,9 @@ class ModelConfig:
     dropout: float = 0.25  # Dropout rate (paper Section 3.5)
     
     # Output parameter constraints
-    sigma_eps: float = 1e-6  # Minimum sigma (scale parameter)
+    sigma_min: float = 0.1   # Sigma lower bound via sigmoid (≈0.54% daily vol)
+    sigma_max: float = 3.0   # Sigma upper bound via sigmoid (≈16% daily vol)
+    alpha_max: float = 3.0   # Alpha clamp bound in normalised space (±3 ≈ ±16% daily return)
     nu_offset: float = 4.0  # Minimum nu (degrees of freedom > 4 for finite kurtosis)
     
     # Numerical stability
@@ -66,6 +68,12 @@ class ModelConfig:
             raise ValueError(f"num_layers must be positive, got {self.num_layers}")
         if not 0.0 <= self.dropout < 1.0:
             raise ValueError(f"dropout must be in [0, 1), got {self.dropout}")
+        if self.sigma_min <= 0:
+            raise ValueError(f"sigma_min must be positive, got {self.sigma_min}")
+        if self.sigma_max <= self.sigma_min:
+            raise ValueError(f"sigma_max must be > sigma_min, got {self.sigma_max} <= {self.sigma_min}")
+        if self.alpha_max <= 0:
+            raise ValueError(f"alpha_max must be positive, got {self.alpha_max}")
         if self.nu_offset < 4.0:
             raise ValueError(f"nu_offset must be >= 4.0 for finite kurtosis, got {self.nu_offset}")
         
@@ -91,7 +99,7 @@ class PriorConfig:
     
     # Initial values for learnable prior parameters
     mu_z_init: float = 0.0  # Initial mean (paper sets this to 0)
-    sigma_z_init: float = 10.0  # Initial scale (increased for numerical stability)
+    sigma_z_init: float = 1.0  # Initial scale matching normalized return scale (~1.0)
     nu_z_init: float = 10.0  # Initial degrees of freedom (>4 required)
     
     def __post_init__(self):
@@ -143,7 +151,7 @@ class TrainingConfig:
     weight_decay: float = 1e-6  # L2 regularization
     
     # Training procedure
-    max_steps: int = 17_290  # Total gradient updates (5 epochs = 5 × 3458 steps, ~4.8 hours)
+    max_steps: int = 250_000  # Total gradient updates (two-phase alpha warmup + fine-tuning)
     num_iwae_samples: int = 20  # k in IWAE loss (Equation 3)
     batch_size: int = 1  # Number of days per batch (paper: 1 day = all stocks)
     
@@ -152,8 +160,15 @@ class TrainingConfig:
     
     # Polyak (exponential moving average) for stability
     use_polyak: bool = True
-    polyak_start_step: int = 8_645  # When to start Polyak averaging (halfway through training)
+    polyak_start_step: int = None  # Auto-set to max_steps // 2 in __post_init__ if None
     polyak_alpha: float = 0.999  # EMA decay rate (not specified in paper, common default)
+
+    # Alpha warmup schedule (posterior collapse prevention)
+    # Phase 1 [0, alpha_warmup_steps): alpha_scale = 0  → forces factor learning via β
+    # Phase 2 [alpha_warmup_steps, alpha_warmup_steps + alpha_anneal_steps): linear ramp 0→1
+    # Phase 3 [alpha_warmup_steps + alpha_anneal_steps, ∞]: alpha_scale = 1 (normal training)
+    alpha_warmup_steps: int = 100_000  # Steps with alpha_scale = 0
+    alpha_anneal_steps: int = 50_000   # Steps to linearly ramp alpha_scale from 0 to 1
 
     # Posterior collapse prevention
     prior_lr_scale: float = 0.1    # Prior param LR = learning_rate * prior_lr_scale (10x slower)
@@ -185,6 +200,9 @@ class TrainingConfig:
             raise ValueError(f"num_iwae_samples must be positive, got {self.num_iwae_samples}")
         if self.batch_size <= 0:
             raise ValueError(f"batch_size must be positive, got {self.batch_size}")
+        # Auto-compute polyak_start_step as halfway through training if not set
+        if self.polyak_start_step is None:
+            self.polyak_start_step = self.max_steps // 2
         if self.polyak_start_step >= self.max_steps:
             raise ValueError(f"polyak_start_step must be < max_steps")
         if not 0.0 < self.polyak_alpha < 1.0:
@@ -193,6 +211,10 @@ class TrainingConfig:
             raise ValueError(f"prior_lr_scale must be in (0, 1], got {self.prior_lr_scale}")
         if self.free_bits_lambda < 0.0:
             raise ValueError(f"free_bits_lambda must be >= 0, got {self.free_bits_lambda}")
+        if self.alpha_warmup_steps < 0:
+            raise ValueError(f"alpha_warmup_steps must be >= 0, got {self.alpha_warmup_steps}")
+        if self.alpha_anneal_steps < 0:
+            raise ValueError(f"alpha_anneal_steps must be >= 0, got {self.alpha_anneal_steps}")
 
 
 def get_default_config(d_ts: int, d_static: int) -> tuple[ModelConfig, PriorConfig, EncoderConfig]:

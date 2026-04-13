@@ -76,6 +76,8 @@ def parse_args():
     parser.add_argument('--mode', type=str, default='paper',
                         choices=['debug', 'paper'],
                         help='Evaluation mode: debug (fast, 50 dates) or paper (full)')
+    parser.add_argument('--run_ppca', action='store_true', default=False,
+                        help='Run PPCA baseline and cross-model comparison after evaluation (off by default)')
     return parser.parse_args()
 
 
@@ -157,37 +159,38 @@ def main():
         print(f"Total time: {total:.1f}s ({total / 60:.1f} minutes)")
         print(f"Results saved to: {output_dir}")
 
-        # 7. PPCA evaluation + comparison
-        print("\n" + "=" * 80)
-        print("RUNNING PPCA BASELINE EVALUATION")
-        print("=" * 80)
-        import subprocess
-        ppca_result = subprocess.run(
-            [sys.executable, "PPCA/evaluate.py", "--mode", args.mode],
-            cwd=Path(__file__).parent.parent,
-            capture_output=False
-        )
-        
-        if ppca_result.returncode == 0:
+        # 7. PPCA evaluation + comparison (opt-in via --run_ppca)
+        if args.run_ppca:
             print("\n" + "=" * 80)
-            print("GENERATING CROSS-MODEL COMPARISON")
+            print("RUNNING PPCA BASELINE EVALUATION")
             print("=" * 80)
-            compare_result = subprocess.run(
-                [
-                    sys.executable, "results/compare.py",
-                    "--results", f"NeuralFactors:results/evaluation/{args.experiment_name}",
-                    "--results", "PPCA:results/ppca/ppca"
-                ],
+            import subprocess
+            ppca_result = subprocess.run(
+                [sys.executable, "PPCA/evaluate.py", "--mode", args.mode],
                 cwd=Path(__file__).parent.parent,
                 capture_output=False
             )
-            if compare_result.returncode == 0:
+            
+            if ppca_result.returncode == 0:
                 print("\n" + "=" * 80)
-                print("FULL EVALUATION PIPELINE COMPLETE")
+                print("GENERATING CROSS-MODEL COMPARISON")
                 print("=" * 80)
-                print(f"Comparison tables saved to: results/comparison/")
-        else:
-            print("\nWarning: PPCA evaluation failed. Skipping comparison.")
+                compare_result = subprocess.run(
+                    [
+                        sys.executable, "results/compare.py",
+                        "--results", f"NeuralFactors:results/evaluation/{args.experiment_name}",
+                        "--results", "PPCA:results/ppca/ppca"
+                    ],
+                    cwd=Path(__file__).parent.parent,
+                    capture_output=False
+                )
+                if compare_result.returncode == 0:
+                    print("\n" + "=" * 80)
+                    print("FULL EVALUATION PIPELINE COMPLETE")
+                    print("=" * 80)
+                    print(f"Comparison tables saved to: results/comparison/")
+            else:
+                print("\nWarning: PPCA evaluation failed. Skipping comparison.")
 
     except Exception as e:
         print("\n" + "=" * 80)

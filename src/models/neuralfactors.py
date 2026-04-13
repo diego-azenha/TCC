@@ -45,7 +45,8 @@ class NeuralFactors(nn.Module):
         S: torch.Tensor,
         S_static: torch.Tensor,
         r: torch.Tensor,
-        mask: Optional[torch.Tensor] = None
+        mask: Optional[torch.Tensor] = None,
+        alpha_scale: float = 1.0,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Encode features and returns to get factor parameters and posterior.
         
@@ -56,9 +57,11 @@ class NeuralFactors(nn.Module):
             S_static: [batch, N, d_static] static features
             r: [batch, N] observed returns
             mask: [batch, N] optional mask for valid stocks
+            alpha_scale: Scalar multiplier applied to alpha before encoder and decoder.
+                Set to 0 during warmup phase to force factor learning; ramps to 1.0.
             
         Returns:
-            alpha: [batch, N] intercepts
+            alpha: [batch, N] intercepts (scaled by alpha_scale)
             B: [batch, N, F] factor loadings
             sigma: [batch, N] idiosyncratic volatility
             nu: [batch, N] Student-T degrees of freedom
@@ -79,6 +82,12 @@ class NeuralFactors(nn.Module):
         
         # Generate factor model parameters
         alpha, B, sigma, nu = self.embedder(S_no_batch, S_static_no_batch)
+        
+        # Apply alpha warmup schedule: scale alpha to prevent posterior collapse.
+        # When alpha_scale = 0, the model can only explain returns via beta'z,
+        # forcing meaningful factor structure to develop before alpha is reintroduced.
+        if alpha_scale != 1.0:
+            alpha = alpha * alpha_scale
         
         # Get prior parameters for encoder (as Normal via moment matching)
         mu_z, Sigma_z = self.prior.to_normal_params()
@@ -122,6 +131,7 @@ class NeuralFactors(nn.Module):
         num_samples: int,
         mask: Optional[torch.Tensor] = None,
         free_bits_lambda: float = 0.0,
+        alpha_scale: float = 1.0,
     ) -> Dict[str, torch.Tensor]:
         """Compute CIWAE loss for training (Paper Equation 7).
         
@@ -134,6 +144,7 @@ class NeuralFactors(nn.Module):
             r: [batch, N] observed returns
             num_samples: K, number of importance samples
             mask: [batch, N] optional mask for valid stocks
+            alpha_scale: Multiplier for alpha (from warmup schedule). Passed to encode().
             
         Returns:
             Dictionary with:
@@ -142,8 +153,8 @@ class NeuralFactors(nn.Module):
                 - kl_divergence: E[KL(q||p)]
                 - log_weights: [batch, K] importance weights (for diagnostics)
         """
-        # Encode to get parameters and posterior
-        alpha, B, sigma, nu, mu_q, L_q = self.encode(S, S_static, r, mask)
+        # Encode to get parameters and posterior (alpha scaled by warmup schedule)
+        alpha, B, sigma, nu, mu_q, L_q = self.encode(S, S_static, r, mask, alpha_scale=alpha_scale)
         
         batch, N, F = B.shape
         

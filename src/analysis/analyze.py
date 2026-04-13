@@ -290,11 +290,16 @@ def analyze_factor_exposures(model, dataloader, output_dir, num_batches=50):
         lo, hi = np.percentile(data, 1), np.percentile(data, 99)
         clipped = data[(data >= lo) & (data <= hi)]
         pct_shown = 100 * len(clipped) / max(len(data), 1)
-        ax.hist(clipped, bins=50, alpha=0.7, edgecolor='black')
+        try:
+            ax.hist(clipped, bins='auto', alpha=0.7, edgecolor='black')
+            if lo < hi:
+                ax.set_xlim(lo, hi)
+        except ValueError:
+            ax.text(0.5, 0.5, f'All values ≈ {np.mean(data):.4f}',
+                    ha='center', va='center', transform=ax.transAxes)
         ax.set_xlabel(xlabel)
         ax.set_ylabel('Frequency')
         ax.set_title(f'{title}\n(1st–99th pct, {pct_shown:.0f}% of data)')
-        ax.set_xlim(lo, hi)
 
     _clipped_hist(axes[0], all_alpha, 'Alpha (Idiosyncratic Return)', 'Distribution of Alpha')
     _clipped_hist(axes[1], all_sigma, 'Sigma (Scale)', 'Distribution of Sigma')

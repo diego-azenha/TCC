@@ -62,6 +62,28 @@ class NeuralFactorsLightning(pl.LightningModule):
         """Forward pass delegates to model."""
         return self.model(S, S_static, r, num_samples, mask)
     
+    def _compute_alpha_scale(self) -> float:
+        """Compute the alpha warmup schedule multiplier for the current step.
+        
+        Returns 0.0 during the warmup phase (forcing factor learning via β),
+        linearly ramps from 0 → 1 during the anneal phase, then holds at 1.0.
+        
+        Phases:
+            [0, warmup_steps)                    : alpha_scale = 0.0
+            [warmup_steps, warmup+anneal_steps)  : alpha_scale linearly 0 → 1
+            [warmup_steps + anneal_steps, ∞)     : alpha_scale = 1.0
+        """
+        step = self.global_step
+        w = self.training_config.alpha_warmup_steps
+        a = self.training_config.alpha_anneal_steps
+        
+        if step < w:
+            return 0.0
+        elif step < w + a:
+            return (step - w) / a
+        else:
+            return 1.0
+    
     def training_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
         """Training step computes CIWAE loss.
         
@@ -74,6 +96,9 @@ class NeuralFactorsLightning(pl.LightningModule):
         """
         S, S_static, r, mask = batch
         
+        # Compute alpha warmup scale and pass to CIWAE loss
+        alpha_scale = self._compute_alpha_scale()
+        
         # Compute CIWAE loss with k importance samples
         output = self.model.compute_iwae_loss(
             S=S,
@@ -82,6 +107,7 @@ class NeuralFactorsLightning(pl.LightningModule):
             num_samples=self.training_config.num_iwae_samples,
             mask=mask,
             free_bits_lambda=self.training_config.free_bits_lambda,
+            alpha_scale=alpha_scale,
         )
         
         loss = output['loss']
@@ -92,6 +118,7 @@ class NeuralFactorsLightning(pl.LightningModule):
         self.log('train/loss', loss, on_step=True, on_epoch=True, prog_bar=True)
         self.log('train/log_likelihood', log_likelihood, on_step=True, on_epoch=True)
         self.log('train/kl_divergence', kl_divergence, on_step=True, on_epoch=True)
+        self.log('train/alpha_scale', alpha_scale, on_step=True, on_epoch=False)
 
         # Free bits diagnostics
         if self.training_config.free_bits_lambda > 0.0:

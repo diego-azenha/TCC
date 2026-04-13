@@ -1,0 +1,74 @@
+================================================================================
+NEURALFACTORS MODEL EVALUATION SUMMARY
+================================================================================
+Generated: 2026-04-04 08:33:45
+
+--------------------------------------------------------------------------------
+1. NEGATIVE LOG-LIKELIHOOD
+--------------------------------------------------------------------------------
+Dates processed: 807
+Date range: 2023-01-02 00:00:00 to 2026-03-26 00:00:00
+Mean NLL_joint:   -495.4418 ± 17.9767
+Mean NLL_ind:     -1.3712 ± 0.0052
+Mean log p(r|z):  497.5101
+Mean KL:          2.1845
+
+--------------------------------------------------------------------------------
+2. COVARIANCE PREDICTION
+--------------------------------------------------------------------------------
+Dates processed: 787
+Date range: 2023-01-30 00:00:00 to 2026-03-26 00:00:00
+Mean MSE: 0.000000
+Std MSE:  0.000001
+Min MSE:  0.000000
+Max MSE:  0.000005
+
+--------------------------------------------------------------------------------
+3. VALUE AT RISK CALIBRATION
+--------------------------------------------------------------------------------
+Quantile   Theor.     Empir.     Error      Kupiec p     Christ. p    Quality
+--------------------------------------------------------------------------------
+0.01       0.0100     0.0000     0.0100     0.0000       nan          Good
+0.05       0.0500     0.0001     0.0499     0.0000       nan          OK
+0.10       0.1000     0.0003     0.0997     0.0000       0.0164       Poor
+
+Kupiec (1995): H0 = violation rate equals theoretical level
+Christoffersen (1998): H0 = violations are independent (no clustering)
+Reject at 5% significance when p-value < 0.05
+
+--------------------------------------------------------------------------------
+4. PORTFOLIO BACKTEST (MIN-VARIANCE)
+--------------------------------------------------------------------------------
+Total Return:       4.12%
+Annualized Return:  1.27%
+Annualized Vol:     16.01%
+Sharpe Ratio:       0.08
+Sortino Ratio:      0.08
+Calmar Ratio:       0.05
+Max Drawdown:       -26.89%
+
+Portfolio Characteristics:
+  Avg Turnover/day: 0.0498
+  Ann. Turnover:    12.6x
+  Avg Max Weight:   0.29%
+  Avg Effective N:  347.5
+
+After Transaction Costs (10 bps one-way):
+  Net Total Return: 0.03%
+  Net Ann. Return:  0.01%
+  Net Sharpe Ratio: 0.00
+
+Benchmark Comparison (Ibovespa):
+  Ann. Return:      18.04%
+  Sharpe:           1.16
+  Excess Return:    -14.38%
+  Information Ratio:-1.79
+
+Notes:
+  - Annualised returns use geometric CAGR: (1 + total)^(252/n) - 1
+  - Sharpe and Sortino use Rf = 0 (risk-free rate not subtracted)
+  - Transaction costs assume 10 bps proportional cost per one-way turnover
+
+================================================================================
+END OF REPORT
+================================================================================

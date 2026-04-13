@@ -63,6 +63,12 @@ def parse_args():
     train.add_argument("--hidden_size", type=int, default=256)
     train.add_argument("--lookback", type=int, default=256)
     train.add_argument("--dropout", type=float, default=0.25)
+    train.add_argument("--sigma_min", type=float, default=0.1,
+                       help="Sigma lower bound via sigmoid (normalised space)")
+    train.add_argument("--sigma_max", type=float, default=3.0,
+                       help="Sigma upper bound via sigmoid (normalised space)")
+    train.add_argument("--alpha_max", type=float, default=3.0,
+                       help="Alpha clamp bound in normalised space")
     train.add_argument("--learning_rate", type=float, default=1e-4)
     train.add_argument("--weight_decay", type=float, default=1e-6)
     train.add_argument("--num_iwae_samples", type=int, default=20)
@@ -89,8 +95,9 @@ def parse_args():
     eval_group.add_argument("--eval_split", type=str, default="test",
                             choices=["train", "val", "test"])
     eval_group.add_argument("--num_samples", type=int, default=100,
-                            help="NLL importance samples (paper mode)")
-
+                            help='NLL importance samples (paper mode)')
+    eval_group.add_argument('--run_ppca', action='store_true', default=False,
+                            help='Run PPCA baseline and cross-model comparison after evaluation (off by default)')
     return p.parse_args()
 
 
@@ -142,6 +149,9 @@ def run_training(args, python: str) -> Path:
         "--polyak_alpha", str(args.polyak_alpha),
         "--prior_lr_scale", str(args.prior_lr_scale),
         "--free_bits_lambda", str(args.free_bits_lambda),
+        "--sigma_min", str(args.sigma_min),
+        "--sigma_max", str(args.sigma_max),
+        "--alpha_max", str(args.alpha_max),
         "--train_end", args.train_end,
         "--val_end", args.val_end,
         "--gpus", str(args.gpus),
@@ -186,6 +196,8 @@ def run_evaluation(args, checkpoint: Path, python: str):
         "--num_samples", str(args.num_samples),
         "--seed", str(args.seed),
     ]
+    if args.run_ppca:
+        cmd.append("--run_ppca")
 
     print("\n" + "=" * 80)
     print("PHASE 2 — EVALUATION")

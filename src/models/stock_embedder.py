@@ -24,7 +24,9 @@ class StockEmbedder(nn.Module):
         num_layers: int = 2,
         activation: str = "gelu",
         dropout: float = 0.25,  # Paper uses 0.25 (Section 3.5)
-        sigma_eps: float = 1e-6,
+        sigma_min: float = 0.1,
+        sigma_max: float = 3.0,
+        alpha_max: float = 3.0,
         nu_offset: float = 4.0,
         lookback: int = 256,  # Paper uses 256 (Table 3, Section 5.1.4)
         config: Optional[ModelConfig] = None,
@@ -42,7 +44,9 @@ class StockEmbedder(nn.Module):
             num_layers = config.num_layers
             activation = config.activation
             dropout = config.dropout
-            sigma_eps = config.sigma_eps
+            sigma_min = config.sigma_min
+            sigma_max = config.sigma_max
+            alpha_max = config.alpha_max
             nu_offset = config.nu_offset
             lookback = config.lookback
         
@@ -57,7 +61,9 @@ class StockEmbedder(nn.Module):
         self.h = h
         self.F = F
         self.activation = activation
-        self.sigma_eps = sigma_eps
+        self.sigma_min = sigma_min
+        self.sigma_max = sigma_max
+        self.alpha_max = alpha_max
         self.nu_offset = nu_offset
         self.lookback = lookback  # Store for validation
 
@@ -81,8 +87,9 @@ class StockEmbedder(nn.Module):
         self.sigma_head = nn.Linear(h, 1)
         self.nu_head = nn.Linear(h, 1)
         
-        # Initialize beta_head with small weights for numerical stability
-        nn.init.normal_(self.beta_head.weight, mean=0.0, std=0.01)
+        # Initialize beta_head with moderate weights so factor contribution is
+        # comparable to return scale at init: std(β'z) ≈ sqrt(F) * 0.1 * sigma_z ≈ 0.4
+        nn.init.normal_(self.beta_head.weight, mean=0.0, std=0.1)
         nn.init.zeros_(self.beta_head.bias)
 
     def _act(self, x: torch.Tensor) -> torch.Tensor:
@@ -154,13 +161,12 @@ class StockEmbedder(nn.Module):
         # Step 5: heads
         alpha = self.alpha_head(H3).squeeze(-1)  # (N,)
         beta = self.beta_head(H3)  # (N, F)
-        sigma = F.softplus(self.sigma_head(H3)).squeeze(-1) + self.sigma_eps  # (N,)
+        sigma = self.sigma_min + (self.sigma_max - self.sigma_min) * torch.sigmoid(self.sigma_head(H3)).squeeze(-1)  # (N,)
         nu = F.softplus(self.nu_head(H3)).squeeze(-1) + self.nu_offset  # (N,)
         
         # [STABILITY] Clamp outputs to prevent numerical issues
-        alpha = torch.clamp(alpha, min=-100.0, max=100.0)
+        alpha = torch.clamp(alpha, min=-self.alpha_max, max=self.alpha_max)
         beta = torch.clamp(beta, min=-10.0, max=10.0)
-        sigma = torch.clamp(sigma, min=self.sigma_eps, max=100.0)
         nu = torch.clamp(nu, min=self.nu_offset, max=100.0)
 
         return alpha, beta, sigma, nu

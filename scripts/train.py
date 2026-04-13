@@ -62,6 +62,9 @@ def parse_args():
     parser.add_argument("--hidden_size", type=int, default=256, help="Hidden dimension h")
     parser.add_argument("--lookback", type=int, default=256, help="Lookback window L")
     parser.add_argument("--dropout", type=float, default=0.25, help="Dropout rate")
+    parser.add_argument("--sigma_min", type=float, default=0.1, help="Sigma lower bound via sigmoid (normalised space)")
+    parser.add_argument("--sigma_max", type=float, default=3.0, help="Sigma upper bound via sigmoid (normalised space)")
+    parser.add_argument("--alpha_max", type=float, default=3.0, help="Alpha clamp bound in normalised space")
     
     # Training hyperparameters
     parser.add_argument("--learning_rate", type=float, default=1e-4, help="Learning rate")
@@ -145,6 +148,9 @@ def main():
         hidden_size=args.hidden_size,
         lookback=args.lookback,
         dropout=args.dropout,
+        sigma_min=args.sigma_min,
+        sigma_max=args.sigma_max,
+        alpha_max=args.alpha_max,
     )
     
     # Create training configuration
