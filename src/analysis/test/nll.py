@@ -1,5 +1,6 @@
 """Negative Log-Likelihood (NLL) metrics for NeuralFactors evaluation."""
 
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import torch
@@ -42,7 +43,7 @@ def compute_nll_metrics(model, dataloader, dataset, num_samples, mode, device):
             r = r.to(device)
             mask = mask.to(device)
 
-            output = model.model.compute_iwae_loss(S, S_static, r, num_samples, mask)
+            output = model.model.compute_elbo_loss(S, S_static, r, mask=mask)
 
             nll_joint = output['loss'].item()
             log_p_r_z = output['log_likelihood'].item()
@@ -82,13 +83,31 @@ def plot_nll_timeseries(nll_df, output_dir):
     """Plot NLL_joint and KL divergence over time."""
     fig, axes = plt.subplots(2, 1, figsize=(12, 8))
 
-    axes[0].plot(nll_df['date'], nll_df['nll_joint'], alpha=0.7, linewidth=1.5)
+    def _clipped_line(ax, x, y, **kwargs):
+        """Plot with y-axis clipped to [1st, 99th] percentile; annotate clipped points."""
+        arr = np.asarray(y, dtype=float)
+        lo, hi = np.nanpercentile(arr, 1), np.nanpercentile(arr, 99)
+        margin = max(abs(hi - lo) * 0.1, abs(hi) * 0.1, 1e-6)
+        n_clipped = int(np.sum(arr > hi + margin))
+        ax.plot(x, y, **kwargs)
+        ax.set_ylim(lo - margin, hi + margin)
+        if n_clipped:
+            ax.annotate(
+                f"{n_clipped} spike(s) clipped (max={arr.max():.1f})",
+                xy=(0.99, 0.97), xycoords='axes fraction',
+                ha='right', va='top', fontsize=8,
+                color='grey', style='italic',
+            )
+
+    _clipped_line(axes[0], nll_df['date'], nll_df['nll_joint'],
+                  alpha=0.7, linewidth=1.5)
     axes[0].set_xlabel('Date')
     axes[0].set_ylabel('NLL Joint')
     axes[0].set_title('Negative Log-Likelihood (Joint) Over Time')
     axes[0].grid(True, alpha=0.3)
 
-    axes[1].plot(nll_df['date'], nll_df['kl'], color='orange', alpha=0.7, linewidth=1.5)
+    _clipped_line(axes[1], nll_df['date'], nll_df['kl'],
+                  color='orange', alpha=0.7, linewidth=1.5)
     axes[1].set_xlabel('Date')
     axes[1].set_ylabel('KL Divergence')
     axes[1].set_title('KL Divergence Over Time')
@@ -98,4 +117,4 @@ def plot_nll_timeseries(nll_df, output_dir):
     output_path = output_dir / "plots" / "nll_timeseries.png"
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
-    print(f"✓ NLL plot saved to: {output_path}")
+    print(f"[OK] NLL plot saved to: {output_path}")

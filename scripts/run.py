@@ -59,7 +59,7 @@ def parse_args():
 
     # ── Training hyperparameters ──────────────────────────────────────────────
     train = p.add_argument_group("Training")
-    train.add_argument("--num_factors", type=int, default=64)
+    train.add_argument("--num_factors", type=int, default=16)
     train.add_argument("--hidden_size", type=int, default=256)
     train.add_argument("--lookback", type=int, default=256)
     train.add_argument("--dropout", type=float, default=0.25)
@@ -71,15 +71,12 @@ def parse_args():
                        help="Alpha clamp bound in normalised space")
     train.add_argument("--learning_rate", type=float, default=1e-4)
     train.add_argument("--weight_decay", type=float, default=1e-6)
-    train.add_argument("--num_iwae_samples", type=int, default=20)
-    train.add_argument("--max_steps", type=int, default=200_000)
+    train.add_argument("--max_steps", type=int, default=250_000)
     train.add_argument("--val_every_n_steps", type=int, default=100_000)
     train.add_argument("--polyak_start_step", type=int, default=None,
                        help="Polyak start step (default: max_steps // 2)")
     train.add_argument("--polyak_alpha", type=float, default=0.999)
-    train.add_argument("--prior_lr_scale", type=float, default=0.1,
-                       help="Prior param LR = learning_rate * prior_lr_scale")
-    train.add_argument("--free_bits_lambda", type=float, default=0.0,
+    train.add_argument("--free_bits_lambda", type=float, default=0.1,
                        help="Min KL floor per factor in nats; 0 = disabled")
     train.add_argument("--train_end", type=str, default="2018-12-31")
     train.add_argument("--val_end", type=str, default="2022-12-31")
@@ -143,11 +140,9 @@ def run_training(args, python: str) -> Path:
         "--dropout", str(args.dropout),
         "--learning_rate", str(args.learning_rate),
         "--weight_decay", str(args.weight_decay),
-        "--num_iwae_samples", str(args.num_iwae_samples),
         "--max_steps", str(args.max_steps),
         "--val_every_n_steps", str(args.val_every_n_steps),
         "--polyak_alpha", str(args.polyak_alpha),
-        "--prior_lr_scale", str(args.prior_lr_scale),
         "--free_bits_lambda", str(args.free_bits_lambda),
         "--sigma_min", str(args.sigma_min),
         "--sigma_max", str(args.sigma_max),

@@ -101,7 +101,7 @@ def get_snapshot_beta(model, dataset, snapshot_date):
     S, S_static, r, mask = S.to(device), S_static.to(device), r.to(device), mask.to(device)
 
     with torch.no_grad():
-        alpha, B, sigma, nu, mu_q, L_q = model.model.encode(S, S_static, r, mask)
+        alpha, B, sigma, mu_q, log_sigma_q = model.model.encode(S, S_static, r, mask)
 
     beta       = B.squeeze(0).cpu().numpy()
     valid_mask = mask.squeeze(0).cpu().numpy().astype(bool)

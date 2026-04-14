@@ -28,9 +28,7 @@ from sklearn.decomposition import PCA
 import sys
 sys.path.append(str(Path(__file__).parent.parent.parent))  # project root
 
-from src.models.lightning_module import NeuralFactorsLightning
-from src.utils.dataset import NeuralFactorsDataset, collate_fn
-from src.utils.config import get_default_config
+from src.analysis.test.loader import load_model_and_data
 from torch.utils.data import DataLoader
 
 
@@ -43,68 +41,6 @@ def parse_args():
     parser.add_argument("--num_samples", type=int, default=1000, help="Number of samples for predictions")
     return parser.parse_args()
 
-
-def load_model_and_data(checkpoint_path, data_dir, split="test"):
-    """Load trained model and dataset."""
-    print(f"Loading model from {checkpoint_path}...")
-    
-    # Load model (strict=False to ignore polyak_model keys in checkpoint)
-    model = NeuralFactorsLightning.load_from_checkpoint(checkpoint_path, strict=False)
-    model.eval()
-    model = model.cuda() if torch.cuda.is_available() else model
-
-    # Read hyperparameters directly from the loaded model so analyze.py is always
-    # consistent with whatever settings were used during training.
-    lookback   = model.model_config.lookback
-    train_end  = model.training_config.checkpoint_dir  # fallback default below
-    # training_config doesn't store split dates, so read from config.json if present
-    # config.json is saved at the experiment root (e.g. checkpoints/new_dataset/config.json)
-    # but the checkpoint itself may live in a subdirectory (e.g. .../neuralfactors-step=.../best.ckpt)
-    ckpt_parent = Path(checkpoint_path).parent
-    config_json = ckpt_parent / "config.json"
-    if not config_json.exists():
-        config_json = ckpt_parent.parent / "config.json"  # one level up for epoch subdirs
-    train_end_date = "2018-12-31"
-    val_end_date   = "2022-12-31"
-    if config_json.exists():
-        import json as _json
-        with open(config_json) as _f:
-            _cfg = _json.load(_f)
-        train_end_date = _cfg.get("args", {}).get("train_end", train_end_date)
-        val_end_date   = _cfg.get("args", {}).get("val_end",   val_end_date)
-    print(f"Model config: lookback={lookback}, train_end={train_end_date}, val_end={val_end_date}")
-
-    # Load dataset
-    print(f"Loading {split} dataset...")
-    x_ts_file = Path(data_dir) / "parquets" / "x_ts.parquet"
-    x_static_file = Path(data_dir) / "parquets" / "x_static.parquet"
-    prices_file = Path(data_dir) / "parquets" / "prices.parquet"
-    
-    # Compute returns_std from training data for normalization
-    if split in ['val', 'test']:
-        import pandas as pd
-        from src.utils.data_utils import compute_returns_std_from_train
-        df_prices = pd.read_parquet(prices_file, engine='pyarrow')
-        df_prices['date'] = pd.to_datetime(df_prices['date'])
-        returns_std = compute_returns_std_from_train(df_prices, train_end=train_end_date)
-        print(f"Returns std from training data: {returns_std:.6f}")
-    else:
-        returns_std = None
-    
-    dataset = NeuralFactorsDataset(
-        x_ts_path=str(x_ts_file),
-        x_static_path=str(x_static_file),
-        prices_path=str(prices_file),
-        split=split,
-        lookback=lookback,
-        returns_std=returns_std,
-        train_end=train_end_date,
-        val_end=val_end_date,
-    )
-    
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=collate_fn)
-    
-    return model, dataloader, dataset
 
 
 def plot_loss_curves(log_dir, output_dir):
@@ -176,29 +112,30 @@ def plot_loss_curves(log_dir, output_dir):
             axes[0, 0].legend()
             axes[0, 0].grid(True, alpha=0.3)
         
-        # 2. Effective Sample Size (ESS)
-        ess_tag = next((t for t in scalar_tags if 'ess' in t.lower()), None)
-        if ess_tag and (ess_tag in scalar_tags):
-            ess = ea.Scalars(ess_tag)
-            steps = [e.step for e in ess]
-            values = [e.value for e in ess]
+        # 2. Encoder health: sigma_q_mean (should stay ~1.0, collapse if → 0)
+        sigma_q_tag = 'train/sigma_q_mean'
+        if sigma_q_tag in scalar_tags:
+            sigma_q = ea.Scalars(sigma_q_tag)
+            steps = [e.step for e in sigma_q]
+            values = [e.value for e in sigma_q]
             axes[0, 1].plot(steps, values, color='green', alpha=0.6)
             axes[0, 1].set_xlabel('Step')
-            axes[0, 1].set_ylabel('ESS')
-            axes[0, 1].set_title('Effective Sample Size (ESS)')
-            axes[0, 1].axhline(y=20, color='red', linestyle='--', label='k=20 (num samples)')
+            axes[0, 1].set_ylabel('σ_q mean')
+            axes[0, 1].set_title('Posterior scale σ_q mean\n(≈1.0 healthy; → 0 = collapse)')
+            axes[0, 1].axhline(y=1.0, color='red', linestyle='--', label='ideal σ_q=1')
             axes[0, 1].legend()
             axes[0, 1].grid(True, alpha=0.3)
         
-        # 3. Prior Sigma_z (scale parameter)
-        if 'train/prior_sigma_z_mean' in scalar_tags:
-            sigma = ea.Scalars('train/prior_sigma_z_mean')
-            steps = [e.step for e in sigma]
-            values = [e.value for e in sigma]
+        # 3. KL per-factor min (should stay > free_bits threshold)
+        kl_min_tag = 'train/kl_min_factor'
+        if kl_min_tag in scalar_tags:
+            kl_min = ea.Scalars(kl_min_tag)
+            steps = [e.step for e in kl_min]
+            values = [e.value for e in kl_min]
             axes[1, 0].plot(steps, values, color='purple')
             axes[1, 0].set_xlabel('Step')
-            axes[1, 0].set_ylabel('Mean Sigma_z')
-            axes[1, 0].set_title('Prior Scale Parameter (Sigma_z)')
+            axes[1, 0].set_ylabel('KL_min factor')
+            axes[1, 0].set_title('Min per-factor KL divergence')
             axes[1, 0].grid(True, alpha=0.3)
         
         # 4. Decoder parameters (alpha, sigma)
@@ -243,31 +180,32 @@ def analyze_factor_exposures(model, dataloader, output_dir, num_batches=50):
     all_beta = []
     all_alpha = []
     all_sigma = []
-    all_nu = []
     stock_names = []
     
+    device = next(model.parameters()).device
+    if device.type == 'cuda':
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+
     with torch.no_grad():
         for i, batch in enumerate(dataloader):
             if i >= num_batches:
                 break
             
             S, S_static, r, mask = batch
-            if torch.cuda.is_available():
-                S, S_static, r, mask = S.cuda(), S_static.cuda(), r.cuda(), mask.cuda()
+            S, S_static, r, mask = S.to(device), S_static.to(device), r.to(device), mask.to(device)
             
             # Get factor exposures
-            alpha, B, sigma, nu, mu_q, L_q = model.model.encode(S, S_static, r, mask)
+            alpha, B, sigma, mu_q, log_sigma_q = model.model.encode(S, S_static, r, mask)
             
             all_beta.append(B.cpu().numpy())  # [1, N, F]
             all_alpha.append(alpha.cpu().numpy())
             all_sigma.append(sigma.cpu().numpy())
-            all_nu.append(nu.cpu().numpy())
     
     # Concatenate all batches
     all_beta = np.concatenate(all_beta, axis=1)[0]  # [N_total, F]
     all_alpha = np.concatenate(all_alpha, axis=1)[0]
     all_sigma = np.concatenate(all_sigma, axis=1)[0]
-    all_nu = np.concatenate(all_nu, axis=1)[0]
     
     F = all_beta.shape[1]
 
@@ -282,28 +220,37 @@ def analyze_factor_exposures(model, dataloader, output_dir, num_batches=50):
     plt.savefig(output_dir / 'factor_clustering.png', dpi=300)
     plt.close()
     
-    # 3. Distribution of alpha, sigma, nu
-    # Clip axes at [1st, 99th] percentile to suppress outliers that compress the view
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+    # 3. Distribution of alpha, sigma
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
 
     def _clipped_hist(ax, data, xlabel, title):
         lo, hi = np.percentile(data, 1), np.percentile(data, 99)
         clipped = data[(data >= lo) & (data <= hi)]
         pct_shown = 100 * len(clipped) / max(len(data), 1)
+        data_range = hi - lo
+        # Near-constant data: bins='auto' produces invisibly thin bars.
+        # Use 50 fixed bins and annotate with mean ± std instead.
+        near_constant = data_range < 1e-3 * max(abs(lo + hi) / 2, 1e-9)
+        bins = 50 if near_constant else 'auto'
         try:
-            ax.hist(clipped, bins='auto', alpha=0.7, edgecolor='black')
+            ax.hist(clipped, bins=bins, alpha=0.7, edgecolor='black')
             if lo < hi:
-                ax.set_xlim(lo, hi)
+                ax.set_xlim(lo - data_range * 0.1, hi + data_range * 0.1)
+            if near_constant:
+                ax.annotate(
+                    f"Near-constant: mean={np.mean(data):.5f}, std={np.std(data):.2e}",
+                    xy=(0.5, 0.97), xycoords='axes fraction',
+                    ha='center', va='top', fontsize=8, color='red',
+                )
         except ValueError:
-            ax.text(0.5, 0.5, f'All values ≈ {np.mean(data):.4f}',
+            ax.text(0.5, 0.5, f'All values = {np.mean(data):.4f}',
                     ha='center', va='center', transform=ax.transAxes)
         ax.set_xlabel(xlabel)
         ax.set_ylabel('Frequency')
-        ax.set_title(f'{title}\n(1st–99th pct, {pct_shown:.0f}% of data)')
+        ax.set_title(f'{title}\n(1st-99th pct, {pct_shown:.0f}% of data)')
 
     _clipped_hist(axes[0], all_alpha, 'Alpha (Idiosyncratic Return)', 'Distribution of Alpha')
     _clipped_hist(axes[1], all_sigma, 'Sigma (Scale)', 'Distribution of Sigma')
-    _clipped_hist(axes[2], all_nu, 'Nu (Degrees of Freedom)', 'Distribution of Nu')
 
     plt.tight_layout()
     plt.savefig(output_dir / 'decoder_param_distributions.png', dpi=300)
@@ -318,54 +265,19 @@ def analyze_factor_exposures(model, dataloader, output_dir, num_batches=50):
     print(f"Beta (Factor Exposures): mean={all_beta.mean():.4f}, std={all_beta.std():.4f}")
     print(f"Alpha (Idiosyncratic): mean={all_alpha.mean():.4f}, std={all_alpha.std():.4f}")
     print(f"Sigma (Scale): mean={all_sigma.mean():.4f}, std={all_sigma.std():.4f}")
-    print(f"Nu (Degrees of Freedom): mean={all_nu.mean():.4f}, std={all_nu.std():.4f}")
 
 
 
-
-
-def analyze_prior_parameters(model, output_dir):
-    """Analyze learned prior parameters."""
-    print("Analyzing prior parameters...")
-    output_dir = Path(output_dir)
-    
-    mu_z, sigma_z, nu_z = model.model.prior.get_params()
-    mu_z = mu_z.detach().cpu().numpy()
-    sigma_z = sigma_z.detach().cpu().numpy()
-    nu_z = nu_z.detach().cpu().item()
-    
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-    
-    # Plot sigma_z distribution
-    axes[0].hist(sigma_z, bins=30, alpha=0.7, edgecolor='black')
-    axes[0].set_xlabel('Sigma_z (Factor Scale)')
-    axes[0].set_ylabel('Frequency')
-    axes[0].set_title(f'Prior Sigma_z Distribution\nMean: {sigma_z.mean():.3f}, Std: {sigma_z.std():.3f}')
-    
-    # Plot mu_z distribution
-    axes[1].hist(mu_z, bins=30, alpha=0.7, edgecolor='black')
-    axes[1].set_xlabel('Mu_z (Factor Mean)')
-    axes[1].set_ylabel('Frequency')
-    axes[1].set_title(f'Prior Mu_z Distribution\nMean: {mu_z.mean():.3f}, Std: {mu_z.std():.3f}')
-    
-    plt.tight_layout()
-    plt.savefig(output_dir / 'prior_parameters.png', dpi=300)
-    plt.close()
-    
-    print(f"\nPrior Parameters:")
-    print(f"Nu_z (degrees of freedom): {nu_z:.4f}")
-    print(f"Sigma_z: mean={sigma_z.mean():.4f}, std={sigma_z.std():.4f}")
-    print(f"Mu_z: mean={mu_z.mean():.4f}, std={mu_z.std():.4f}")
 
 
 def main():
     args = parse_args()
     
     # Load model and data
-    model, dataloader, _ = load_model_and_data(
-        args.checkpoint, 
-        args.data_dir, 
-        args.split
+    model, dataloader, _, _returns_std, _device = load_model_and_data(
+        args.checkpoint,
+        args.data_dir,
+        args.split,
     )
     
     output_dir = Path(args.output_dir)
@@ -392,7 +304,6 @@ def main():
     plot_loss_curves(log_dir, output_dir)
     
     # Run analyses
-    analyze_prior_parameters(model, output_dir)
     analyze_factor_exposures(model, dataloader, output_dir)
     
     print(f"\n{'='*60}")

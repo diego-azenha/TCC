@@ -62,6 +62,21 @@ class NeuralFactorsDataset(Dataset):
         """
         super().__init__()
         
+        # Store constructor args so __getstate__ can make a tiny pickle.
+        # Workers call __setstate__ -> __init__ to rebuild caches independently
+        # (avoids piping the ~1 GB numpy cache through a Windows anonymous pipe).
+        self._init_params = {
+            'x_ts_path': x_ts_path,
+            'x_static_path': x_static_path,
+            'prices_path': prices_path,
+            'split': split,
+            'lookback': lookback,
+            'normalize': normalize,
+            'returns_std': returns_std,  # updated below after computation
+            'train_end': train_end,
+            'val_end': val_end,
+        }
+
         self.lookback = lookback
         self.split = split
         self.normalize = normalize
@@ -87,6 +102,10 @@ class NeuralFactorsDataset(Dataset):
             returns_df, self.returns_std = normalize_returns(returns_df, std_value=returns_std)
         else:
             self.returns_std = 1.0
+        
+        # Keep _init_params up to date with the actually-used returns_std
+        # (may differ from what was passed if it was computed from training data)
+        self._init_params['returns_std'] = self.returns_std
         
         # Split time-series and returns by date
         print(f"Splitting data: train_end={train_end}, val_end={val_end}")
@@ -172,6 +191,31 @@ class NeuralFactorsDataset(Dataset):
         # ─────────────────────────────────────────────────────────────────────
 
         print(f"Dataset {split}: {len(self.dates)} trading days, d_ts={self.d_ts}, d_static={self.d_static}")
+
+    # ── Multiprocessing pickle support (Windows spawn) ────────────────────────
+
+    def __getstate__(self) -> dict:
+        """Pickle only the tiny constructor args, not the ~1 GB numpy caches.
+
+        On Windows, DataLoader workers use 'spawn' and must receive the dataset
+        object through an OS pipe.  Pickling the full cache blows the pipe buffer
+        (OSError EINVAL).  Returning only _init_params keeps the pickle at ~1 KB;
+        each worker rebuilds its caches independently via __setstate__ -> __init__.
+        """
+        return self._init_params
+
+    def __setstate__(self, state: dict) -> None:
+        """Rebuild the dataset (including all caches) inside the worker process."""
+        import os, sys
+        with open(os.devnull, 'w') as _null:
+            _old = sys.stdout
+            sys.stdout = _null
+            try:
+                self.__init__(**state)
+            finally:
+                sys.stdout = _old
+
+    # ─────────────────────────────────────────────────────────────────────────
 
     def __len__(self) -> int:
         """Number of trading days in split."""

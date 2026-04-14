@@ -137,7 +137,7 @@ def compute_var_metrics(model, dataloader, dataset, num_samples, mode, returns_s
             if idx >= n_prepass:
                 break
             S_p, S_static_p, r_p, mask_p = [x.to(device) for x in batch]
-            _, _, _, _, mu_q_p, _ = model.model.encode(S_p, S_static_p, r_p, mask_p)
+            _, _, _, mu_q_p, _ = model.model.encode(S_p, S_static_p, r_p, mask_p)
             factor_samples.append(mu_q_p.squeeze(0).float().cpu().numpy())  # [F]
 
     factor_arr  = np.stack(factor_samples, axis=0)          # [T_pre, F]
@@ -161,7 +161,7 @@ def compute_var_metrics(model, dataloader, dataset, num_samples, mode, returns_s
             mask = mask.to(device)
 
             # Get decoder parameters for this day (no posterior needed)
-            alpha, B, sigma, nu, _, _ = model.model.encode(S, S_static, r, mask)
+            alpha, B, sigma, _, _ = model.model.encode(S, S_static, r, mask)
 
             # Sample z from the empirical factor distribution (diagonal Normal approx).
             # This is the out-of-sample forecast distribution: "given how factors
@@ -174,7 +174,7 @@ def compute_var_metrics(model, dataloader, dataset, num_samples, mode, returns_s
             )
             z = torch.from_numpy(z_numpy).float().unsqueeze(0).to(device)  # [1, K, F]
 
-            r_samples = dec.sample_r_given_z(alpha, B, sigma, nu, z)  # [1, N, K]
+            r_samples = dec.sample_r_given_z(alpha, B, sigma, z)  # [1, N, K]
             r_samples = r_samples[0].cpu().numpy() * returns_std       # [N, K]
 
             r_actual = r[0].cpu().numpy() * returns_std

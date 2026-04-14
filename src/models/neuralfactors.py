@@ -1,356 +1,240 @@
-"""Main NeuralFactors model integrating all components.
+"""NeuralFactors VAE with DeepSet encoder, Gaussian decoder, and ELBO loss.
 
-Combines StockEmbedder, Prior, Encoder, and Decoder for training and inference.
+Architecture:
+  StockEmbedder → (alpha, B, sigma)
+  DeepSetEncoder → (mu_q, log_sigma_q)
+  z = mu_q + sigma_q ⊙ ε,  ε ~ N(0,I)  [K=1 sample]
+  p(r_i|z) = N(alpha_i + beta_i' z, sigma_i^2)
+  ELBO = E[log p(r|z)] - KL(q || N(0,I)) + free_bits_penalty
 """
 
+import math
 import torch
 import torch.nn as nn
 from typing import Optional, Dict, Tuple
-import math
 
 from .stock_embedder import StockEmbedder
-from .prior import StudentTPrior
-from . import encoder as enc
+from .encoder import DeepSetEncoder
 from . import decoder as dec
 from ..utils.config import ModelConfig
 
 
 class NeuralFactors(nn.Module):
-    """NeuralFactors VAE for factor learning from equity returns.
-    
-    Training mode: Uses encoder q(z|r) for posterior inference (CIWAE).
-    Inference mode: Samples from prior p(z) without encoder.
-    
-    Paper: Achintya Gopal, "NeuralFactors" (2024, arXiv:2408.01499v1)
+    """NeuralFactors VAE: DeepSet encoder + Gaussian decoder + ELBO.
+
+    Training:  compute_elbo_loss(S, S_static, r, mask)
+    Inference: predict(S, S_static)
     """
-    
+
     def __init__(self, config: Optional[ModelConfig] = None):
-        """
-        Args:
-            config: ModelConfig with all hyperparameters (F, h, dropout, etc.)
-        """
         super().__init__()
-        
         if config is None:
             config = ModelConfig()
-        
         self.config = config
-        
-        # Components
+
         self.embedder = StockEmbedder(config=config)
-        self.prior = StudentTPrior(num_factors=config.num_factors, config=config.prior_config)
-    
+        self.encoder = DeepSetEncoder(
+            num_factors=config.num_factors,
+            phi_hidden=config.encoder_config.phi_hidden,
+            rho_hidden=config.encoder_config.rho_hidden,
+        )
+
+    # ── Encode ────────────────────────────────────────────────────────────────
+
     def encode(
         self,
         S: torch.Tensor,
         S_static: torch.Tensor,
         r: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
-        alpha_scale: float = 1.0,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Encode features and returns to get factor parameters and posterior.
-        
-        Training step: Generate factor model parameters and compute analytical posterior.
-        
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Run embedder + DeepSet encoder for one trading day.
+
         Args:
-            S: [batch, N, L, d_time] time-varying features
-            S_static: [batch, N, d_static] static features
-            r: [batch, N] observed returns
-            mask: [batch, N] optional mask for valid stocks
-            alpha_scale: Scalar multiplier applied to alpha before encoder and decoder.
-                Set to 0 during warmup phase to force factor learning; ramps to 1.0.
-            
+            S:        [batch, N, L, d_ts]
+            S_static: [batch, N, d_static]
+            r:        [batch, N]
+            mask:     [batch, N] bool
+
         Returns:
-            alpha: [batch, N] intercepts (scaled by alpha_scale)
-            B: [batch, N, F] factor loadings
-            sigma: [batch, N] idiosyncratic volatility
-            nu: [batch, N] Student-T degrees of freedom
-            mu_q: [batch, F] posterior mean
-            L_q: [batch, F, F] posterior Cholesky factor
+            alpha:       [batch, N]
+            B:           [batch, N, F]
+            sigma:       [batch, N]
+            mu_q:        [batch, F]
+            log_sigma_q: [batch, F]
         """
-        # Paper uses batch_size=1, so we squeeze/unsqueeze to match embedder expectations
-        # S: [batch, N, L, d_ts] -> [N, L, d_ts] (batch must be 1)
-        # S_static: [batch, N, d_static] -> [N, d_static]
-        batch_size = S.shape[0]
-        if batch_size != 1:
-            raise ValueError(f"encode expects batch_size=1 (as per paper), got {batch_size}")
-        
-        S_no_batch = S.squeeze(0)  # [N, L, d_ts]
-        S_static_no_batch = S_static.squeeze(0)  # [N, d_static]
-        r_no_batch = r.squeeze(0) if r.dim() == 2 else r  # [N]
-        mask_no_batch = mask.squeeze(0) if mask is not None and mask.dim() == 2 else mask  # [N] or None
-        
-        # Generate factor model parameters
-        alpha, B, sigma, nu = self.embedder(S_no_batch, S_static_no_batch)
-        
-        # Apply alpha warmup schedule: scale alpha to prevent posterior collapse.
-        # When alpha_scale = 0, the model can only explain returns via beta'z,
-        # forcing meaningful factor structure to develop before alpha is reintroduced.
-        if alpha_scale != 1.0:
-            alpha = alpha * alpha_scale
-        
-        # Get prior parameters for encoder (as Normal via moment matching)
-        mu_z, Sigma_z = self.prior.to_normal_params()
-        
-        # Encoder expects no batch dimension (will add it internally if needed)
-        # Compute analytical posterior q(z|r)
-        mu_q, L_q, _, _ = enc.encoder_recon(
-            alpha=alpha,
-            B=B,
-            sigma=sigma,
-            r=r_no_batch,
-            mu_z=mu_z,
-            Sigma_z=Sigma_z,
-            mask=mask_no_batch,
-            eps=self.config.encoder_config.eps,
-            jitter_init=self.config.encoder_config.jitter_init,
-            jitter_max=self.config.encoder_config.jitter_max,
-            jitter_multiplier=self.config.encoder_config.jitter_multiplier,
-            use_fp64=self.config.encoder_config.use_fp64,
-        )
-        
-        # Add batch dimension back for consistency: [N, ...] -> [batch, N, ...]
-        alpha = alpha.unsqueeze(0)  # [1, N]
-        B = B.unsqueeze(0)  # [1, N, F]
-        sigma = sigma.unsqueeze(0)  # [1, N]
-        nu = nu.unsqueeze(0)  # [1, N]
-        
-        # mu_q and L_q might already have batch dim from encoder (if it added it)
-        if mu_q.dim() == 1:
-            mu_q = mu_q.unsqueeze(0)  # [F] -> [1, F]
-        if L_q.dim() == 2:
-            L_q = L_q.unsqueeze(0)  # [F, F] -> [1, F, F]
-        
-        return alpha, B, sigma, nu, mu_q, L_q
-    
-    def compute_iwae_loss(
+        batch = S.shape[0]
+        if batch != 1:
+            raise ValueError(f"encode expects batch_size=1, got {batch}")
+
+        S_nb = S.squeeze(0)        # [N, L, d_ts]
+        S_st_nb = S_static.squeeze(0)  # [N, d_static]
+        r_nb = r.squeeze(0)        # [N]
+        mask_nb = mask.squeeze(0) if mask is not None else None  # [N]
+
+        # Embedder
+        alpha, B, sigma = self.embedder(S_nb, S_st_nb)  # [N], [N,F], [N]
+
+        # Add batch dim for encoder
+        alpha_b = alpha.unsqueeze(0)   # [1, N]
+        B_b = B.unsqueeze(0)           # [1, N, F]
+        sigma_b = sigma.unsqueeze(0)   # [1, N]
+        r_b = r_nb.unsqueeze(0)        # [1, N]
+        mask_b = mask_nb.unsqueeze(0) if mask_nb is not None else None  # [1, N]
+
+        mu_q, log_sigma_q = self.encoder(r_b, alpha_b, B_b, sigma_b, mask_b)  # [1,F], [1,F]
+
+        return alpha_b, B_b, sigma_b, mu_q, log_sigma_q
+
+    # ── ELBO Loss ─────────────────────────────────────────────────────────────
+
+    def compute_elbo_loss(
         self,
         S: torch.Tensor,
         S_static: torch.Tensor,
         r: torch.Tensor,
-        num_samples: int,
         mask: Optional[torch.Tensor] = None,
         free_bits_lambda: float = 0.0,
-        alpha_scale: float = 1.0,
     ) -> Dict[str, torch.Tensor]:
-        """Compute CIWAE loss for training (Paper Equation 7).
-        
-        CIWAE = E_q [ log p(r|z) + log p(z) - log q(z|r) ]
-        Uses importance weighting with K samples.
-        
+        """Compute ELBO loss for one trading day.
+
+        ELBO = E_q[log p(r|z)] - KL(q(z|r) || N(0,I))
+        With optional free-bits floor: penalty = Σ_f max(0, λ - KL_f)
+
         Args:
-            S: [batch, N, L, d_time] time-varying features
-            S_static: [batch, N, d_static] static features
-            r: [batch, N] observed returns
-            num_samples: K, number of importance samples
-            mask: [batch, N] optional mask for valid stocks
-            alpha_scale: Multiplier for alpha (from warmup schedule). Passed to encode().
-            
-        Returns:
-            Dictionary with:
-                - loss: scalar CIWAE loss (negative ELBO)
-                - log_likelihood: E[log p(r|z)]
-                - kl_divergence: E[KL(q||p)]
-                - log_weights: [batch, K] importance weights (for diagnostics)
+            S:                [batch, N, L, d_ts]
+            S_static:         [batch, N, d_static]
+            r:                [batch, N]
+            mask:             [batch, N] bool
+            free_bits_lambda: λ (nats/factor); 0 disables the floor
+
+        Returns dict with:
+            loss, log_likelihood, kl_divergence, kl_per_factor,
+            free_bits_penalty, alpha, sigma
         """
-        # Encode to get parameters and posterior (alpha scaled by warmup schedule)
-        alpha, B, sigma, nu, mu_q, L_q = self.encode(S, S_static, r, mask, alpha_scale=alpha_scale)
-        
+        alpha, B, sigma, mu_q, log_sigma_q = self.encode(S, S_static, r, mask)
+
         batch, N, F = B.shape
-        
-        # Sample z from posterior q(z|r) using reparameterization
-        # z = mu_q + L_q @ eps, where eps ~ N(0,I)
-        # mu_q: [batch, F], L_q: [batch, F, F], eps: [batch, K, F]
-        eps = torch.randn(batch, num_samples, F, device=mu_q.device, dtype=mu_q.dtype)  # [batch, K, F]
-        
-        # Use bmm for batched matrix multiplication: L_q @ eps^T, then transpose back
-        # eps: [batch, K, F] -> [batch, F, K]
-        # L_q @ eps^T: [batch, F, F] @ [batch, F, K] -> [batch, F, K]
-        # Result^T: [batch, K, F]
-        z = mu_q.unsqueeze(1) + torch.bmm(L_q, eps.transpose(1, 2)).transpose(1, 2)  # [batch, K, F]
-        
-        # Compute log p(r|z) - likelihood
-        log_p_r_given_z = dec.log_pdf_r_given_z(
-            alpha=alpha.unsqueeze(1).expand(-1, num_samples, -1),  # [batch, K, N]
-            B=B.unsqueeze(1).expand(-1, num_samples, -1, -1),      # [batch, K, N, F]
-            sigma=sigma.unsqueeze(1).expand(-1, num_samples, -1),  # [batch, K, N]
-            nu=nu.unsqueeze(1).expand(-1, num_samples, -1),        # [batch, K, N]
-            z=z,                                                     # [batch, K, F]
-            r=r.unsqueeze(1).expand(-1, num_samples, -1),          # [batch, K, N]
-            mask=mask.unsqueeze(1).expand(-1, num_samples, -1) if mask is not None else None
-        )  # [batch, K]
-        
-        # Compute log p(z) - prior
-        log_p_z = self.prior.log_prob(z)  # [batch, K]
-        
-        # Compute log q(z|r) - posterior
-        # q(z|r) ~ N(mu_q, L_q L_q^T)
-        # log q = -0.5 * (F*log(2pi) + log|Sigma_q| + (z-mu)^T Sigma^-1 (z-mu))
-        z_centered = z - mu_q.unsqueeze(1)  # [batch, K, F]
-        
-        # Solve L_q @ y = z_centered for y, then compute ||y||^2
-        # This is equivalent to (z-mu)^T Sigma^-1 (z-mu)
-        L_q_expanded = L_q.unsqueeze(1).expand(-1, num_samples, -1, -1)  # [batch, K, F, F]
-        y = torch.linalg.solve_triangular(L_q_expanded, z_centered.unsqueeze(-1), upper=False)  # [batch, K, F, 1]
-        mahalanobis = torch.sum(y * y, dim=(-2, -1))  # [batch, K]
-        
-        # Log determinant of covariance (via Cholesky)
-        log_det_Sigma_q = 2.0 * torch.sum(torch.log(torch.diagonal(L_q, dim1=-2, dim2=-1)), dim=-1)  # [batch]
-        
-        log_q_z = -0.5 * (F * math.log(2 * math.pi) + log_det_Sigma_q.unsqueeze(1) + mahalanobis)  # [batch, K]
-        
-        # Compute importance weights: log w = log p(r|z) + log p(z) - log q(z|r)
-        log_weights = log_p_r_given_z + log_p_z - log_q_z  # [batch, K]
-        
-        # IWAE loss: -log mean_k exp(log w_k)
-        # Use log-sum-exp for numerical stability
-        log_mean_weight = torch.logsumexp(log_weights, dim=1) - math.log(num_samples)  # [batch]
-        iwae_loss = -torch.mean(log_mean_weight)  # scalar
 
-        # Free bits: add a penalty that pushes per-factor KL above the floor lambda.
-        # Prior params are detached so the gradient only flows through the encoder
-        # (mu_q, L_q). The IWAE log_p_z term already provides correct gradients to
-        # the prior — giving it a second signal here would create a perverse incentive
-        # for sigma_z to shrink in order to inflate KL and satisfy the floor.
-        free_bits_penalty = torch.zeros(1, device=mu_q.device, dtype=torch.float32)
-        kl_approx_per_factor = None
+        # ── Sample z (K=1, reparameterization) ───────────────────────────────
+        z = self.encoder.sample(mu_q, log_sigma_q)  # [batch, 1, F]
+
+        # ── Reconstruction log p(r|z) ────────────────────────────────────────
+        r_exp = r.unsqueeze(1).expand(-1, 1, -1)        # [batch, 1, N]
+        mask_exp = mask.unsqueeze(1).expand(-1, 1, -1) if mask is not None else None
+
+        log_p_r_z = dec.log_pdf_r_given_z(
+            alpha=alpha.unsqueeze(1).expand(-1, 1, -1),  # [batch, 1, N]
+            B=B.unsqueeze(1).expand(-1, 1, -1, -1),      # [batch, 1, N, F]
+            sigma=sigma.unsqueeze(1).expand(-1, 1, -1),  # [batch, 1, N]
+            z=z,                                          # [batch, 1, F]
+            r=r_exp,
+            mask=mask_exp,
+        )  # [batch, 1]
+        log_p_r_z = log_p_r_z.squeeze(1)  # [batch]
+
+        # ── KL(q || N(0,I)) — exact closed form ──────────────────────────────
+        # KL = 0.5 * Σ_f (σ²_f + μ²_f - 1 - log σ²_f)
+        sigma_q = torch.exp(log_sigma_q)  # [batch, F]
+        kl_per_factor = 0.5 * (
+            sigma_q ** 2 + mu_q ** 2 - 1.0 - 2.0 * log_sigma_q
+        )  # [batch, F]
+        kl = kl_per_factor.sum(dim=-1)  # [batch]
+
+        # ── Free bits floor ───────────────────────────────────────────────────
+        free_bits_penalty = torch.zeros(1, device=mu_q.device)
         if free_bits_lambda > 0.0:
-            mu_z_mm, Sigma_z_mm = self.prior.to_normal_params()
-            # Detach prior params — penalty is encoder-only
-            prior_var = torch.diag(Sigma_z_mm).float().detach()   # [F]
-            mu_z_mm_f = mu_z_mm.float().detach()                  # [F]
+            free_bits_penalty = torch.clamp(
+                free_bits_lambda - kl_per_factor, min=0.0
+            ).sum(dim=-1).mean()
 
-            # L_q is lower-triangular, so diag(Σ_q) = row-norms²(L_q)
-            var_q = (L_q.float() ** 2).sum(dim=-1)                # [batch, F]
-            mu_q_f = mu_q.float()                                  # [batch, F]
+        # ── ELBO loss (minimised → negate ELBO) ──────────────────────────────
+        elbo = log_p_r_z - kl  # [batch]
+        loss = -elbo.mean() + free_bits_penalty
 
-            # Gaussian KL(q || moment-matched prior), per factor
-            kl_approx = 0.5 * (
-                var_q / prior_var
-                + (mu_q_f - mu_z_mm_f) ** 2 / prior_var
-                - 1.0
-                + torch.log(prior_var)
-                - torch.log(var_q)
-            )  # [batch, F]
-
-            free_bits_penalty = torch.clamp(free_bits_lambda - kl_approx, min=0.0).sum(dim=-1).mean()
-            iwae_loss = iwae_loss + free_bits_penalty
-
-            with torch.no_grad():
-                kl_approx_per_factor = kl_approx.mean(dim=0)  # [F]
-
-        # Diagnostics
         with torch.no_grad():
-            log_likelihood = torch.mean(log_p_r_given_z)
-            kl_divergence = torch.mean(log_q_z - log_p_z)
+            log_likelihood = log_p_r_z.mean()
+            kl_divergence = kl.mean()
+            kl_pf = kl_per_factor.mean(dim=0)  # [F]
 
-        result = {
-            'loss': iwae_loss,
+        return {
+            'loss': loss,
             'log_likelihood': log_likelihood,
             'kl_divergence': kl_divergence,
-            'log_weights': log_weights.detach(),
+            'kl_per_factor': kl_pf,
+            'free_bits_penalty': free_bits_penalty.detach(),
             'alpha': alpha.detach(),
             'sigma': sigma.detach(),
-            'nu': nu.detach(),
-            'free_bits_penalty': free_bits_penalty.detach(),
+            'mu_q': mu_q.detach(),
+            'log_sigma_q': log_sigma_q.detach(),
         }
-        if kl_approx_per_factor is not None:
-            result['kl_approx_per_factor'] = kl_approx_per_factor
-        return result
-    
+
+    # ── Inference ─────────────────────────────────────────────────────────────
+
     def predict(
         self,
         S: torch.Tensor,
         S_static: torch.Tensor,
         num_samples: int = 1,
-        return_factors: bool = False
+        return_factors: bool = False,
     ) -> Dict[str, torch.Tensor]:
-        """Generate predictions by sampling from prior (inference mode).
-        
+        """Generate return predictions by sampling z ~ N(0,I).
+
         Args:
-            S: [batch, N, L, d_time] time-varying features
-            S_static: [batch, N, d_static] static features
-            num_samples: K, number of samples to draw
-            return_factors: If True, return sampled z
-            
-        Returns:
-            Dictionary with:
-                - r_samples: [batch, N, K] or [batch, N] return samples
-                - r_mean: [batch, N] marginal mean E[r]
-                - r_std: [batch, N] marginal std sqrt(Var[r])
-                - factors: [batch, K, F] sampled factors (if return_factors=True)
+            S:           [batch, N, L, d_ts]
+            S_static:    [batch, N, d_static]
+            num_samples: K — samples from prior
+            return_factors: include sampled z in output
+
+        Returns dict with r_samples, r_mean, r_std, (optionally factors).
         """
-        batch, N = S.shape[0], S.shape[1]
-        
-        # Generate factor model parameters
-        alpha, B, sigma, nu = self.embedder(S, S_static)
-        
-        # Sample z from prior p(z)
-        z = self.prior.sample(batch_size=batch, num_samples=num_samples, device=S.device)  # [batch, K, F]
-        
-        # Sample returns r|z
+        batch = S.shape[0]
+        S_nb = S.squeeze(0)
+        S_st_nb = S_static.squeeze(0)
+
+        alpha_n, B_n, sigma_n = self.embedder(S_nb, S_st_nb)  # [N], [N,F], [N]
+        alpha = alpha_n.unsqueeze(0)   # [1, N]
+        B = B_n.unsqueeze(0)           # [1, N, F]
+        sigma = sigma_n.unsqueeze(0)   # [1, N]
+
+        F_dim = B.shape[-1]
+        z = torch.randn(batch, num_samples, F_dim, device=S.device)  # [1, K, F]
+
         r_samples = dec.sample_r_given_z(
-            alpha=alpha.unsqueeze(1).expand(-1, num_samples, -1),  # [batch, K, N]
-            B=B.unsqueeze(1).expand(-1, num_samples, -1, -1),      # [batch, K, N, F]
-            sigma=sigma.unsqueeze(1).expand(-1, num_samples, -1),  # [batch, K, N]
-            nu=nu.unsqueeze(1).expand(-1, num_samples, -1),        # [batch, K, N]
-            z=z                                                     # [batch, K, F]
-        )  # [batch, K, N]
-        
-        # Transpose to [batch, N, K] for consistency
-        r_samples = r_samples.transpose(1, 2)  # [batch, N, K]
-        
-        # Compute marginal statistics (no sampling needed)
-        mu_z, Sigma_z = self.prior.to_normal_params()
-        r_mean = dec.marginal_mean(alpha, B, mu_z)  # [batch, N]
-        r_cov = dec.marginal_covariance(B, Sigma_z, sigma)  # [batch, N, N]
-        r_std = torch.sqrt(torch.diagonal(r_cov, dim1=-2, dim2=-1))  # [batch, N]
-        
+            alpha=alpha.unsqueeze(1).expand(-1, num_samples, -1),  # [1, K, N]
+            B=B.unsqueeze(1).expand(-1, num_samples, -1, -1),      # [1, K, N, F]
+            sigma=sigma.unsqueeze(1).expand(-1, num_samples, -1),  # [1, K, N]
+            z=z,
+        )  # [1, N, K] or [1, N] if K=1
+
+        # Marginal stats:  E[r] = alpha (mu_z=0),  Var[r] = sigma^2 + diag(B B^T)
+        r_mean = dec.marginal_mean(alpha, B)  # [1, N]
+        r_cov = dec.marginal_covariance(B, sigma)  # [1, N, N]
+        r_std = torch.sqrt(torch.diagonal(r_cov, dim1=-2, dim2=-1))  # [1, N]
+
         result = {
-            'r_samples': r_samples.squeeze(-1) if num_samples == 1 else r_samples,
+            'r_samples': r_samples,
             'r_mean': r_mean,
-            'r_std': r_std
+            'r_std': r_std,
         }
-        
         if return_factors:
             result['factors'] = z
-        
         return result
-    
+
+    # ── forward ───────────────────────────────────────────────────────────────
+
     def forward(
         self,
         S: torch.Tensor,
         S_static: torch.Tensor,
         r: Optional[torch.Tensor] = None,
         num_samples: Optional[int] = None,
-        mask: Optional[torch.Tensor] = None
+        mask: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
-        """Forward pass with automatic train/inference mode.
-        
-        Training (r provided): Computes CIWAE loss.
-        Inference (r=None): Generates predictions from prior.
-        
-        Args:
-            S: [batch, N, L, d_time] time-varying features
-            S_static: [batch, N, d_static] static features
-            r: [batch, N] observed returns (training only)
-            num_samples: K samples (default: config.num_iwae_samples for train, 1 for inference)
-            mask: [batch, N] optional mask for valid stocks
-            
-        Returns:
-            Training: {'loss', 'log_likelihood', 'kl_divergence', 'log_weights'}
-            Inference: {'r_samples', 'r_mean', 'r_std'}
-        """
+        """Auto-switch: ELBO loss when r provided, prediction otherwise."""
         if r is not None:
-            # Training mode
-            if num_samples is None:
-                num_samples = self.config.num_iwae_samples
-            return self.compute_iwae_loss(S, S_static, r, num_samples, mask)
-        else:
-            # Inference mode
-            if num_samples is None:
-                num_samples = 1
-            return self.predict(S, S_static, num_samples)
+            return self.compute_elbo_loss(S, S_static, r, mask)
+        return self.predict(S, S_static, num_samples=num_samples or 1)
 
 
 __all__ = ["NeuralFactors"]

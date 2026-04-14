@@ -1,7 +1,8 @@
-"""PyTorch Lightning module for NeuralFactors training.
+"""PyTorch Lightning module for NeuralFactors (simplified ELBO version).
 
-Wraps the NeuralFactors model with training/validation logic, optimizer configuration,
-and Polyak averaging as specified in paper Section 3.5.
+Single Adam optimizer group — no sigma freeze, no prior params.
+Training calls compute_elbo_loss() (K=1, Gaussian, exact KL).
+Health metrics logged every 100 steps to watch for posterior collapse.
 """
 
 import torch
@@ -15,264 +16,146 @@ from ..utils.config import ModelConfig, TrainingConfig
 
 
 class NeuralFactorsLightning(pl.LightningModule):
-    """Lightning module for NeuralFactors training.
-    
-    Implements:
-    - CIWAE loss training (Paper Equation 3)
-    - Adam optimizer with weight decay (Paper Section 3.5)
-    - Polyak averaging starting at step 50,000 (Paper Section 3.5)
-    - Validation with NLL_joint metric
-    """
-    
+    """Lightning wrapper for NeuralFactors training with ELBO and Polyak averaging."""
+
     def __init__(
         self,
         model_config: ModelConfig,
         training_config: TrainingConfig,
     ):
-        """
-        Args:
-            model_config: Model architecture configuration
-            training_config: Training hyperparameters
-        """
         super().__init__()
-        
         self.save_hyperparameters()
-        
         self.model_config = model_config
         self.training_config = training_config
-        
-        # Initialize model
+
         self.model = NeuralFactors(config=model_config)
-        
-        # Polyak averaging (exponential moving average)
+
         self.use_polyak = training_config.use_polyak
         if self.use_polyak:
-            self.polyak_model = None  # Initialized after first forward pass
+            self.polyak_model = None
             self.polyak_alpha = training_config.polyak_alpha
             self.polyak_start_step = training_config.polyak_start_step
-    
+
+    # ── forward ───────────────────────────────────────────────────────────────
+
     def forward(
         self,
         S: torch.Tensor,
         S_static: torch.Tensor,
         r: Optional[torch.Tensor] = None,
         num_samples: Optional[int] = None,
-        mask: Optional[torch.Tensor] = None
+        mask: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
-        """Forward pass delegates to model."""
         return self.model(S, S_static, r, num_samples, mask)
-    
-    def _compute_alpha_scale(self) -> float:
-        """Compute the alpha warmup schedule multiplier for the current step.
-        
-        Returns 0.0 during the warmup phase (forcing factor learning via β),
-        linearly ramps from 0 → 1 during the anneal phase, then holds at 1.0.
-        
-        Phases:
-            [0, warmup_steps)                    : alpha_scale = 0.0
-            [warmup_steps, warmup+anneal_steps)  : alpha_scale linearly 0 → 1
-            [warmup_steps + anneal_steps, ∞)     : alpha_scale = 1.0
-        """
-        step = self.global_step
-        w = self.training_config.alpha_warmup_steps
-        a = self.training_config.alpha_anneal_steps
-        
-        if step < w:
-            return 0.0
-        elif step < w + a:
-            return (step - w) / a
-        else:
-            return 1.0
-    
+
+    # ── Training ──────────────────────────────────────────────────────────────
+
     def training_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
-        """Training step computes CIWAE loss.
-        
-        Args:
-            batch: Tuple of (S, S_static, r, mask)
-            batch_idx: Batch index
-            
-        Returns:
-            Loss tensor for backpropagation
-        """
         S, S_static, r, mask = batch
-        
-        # Compute alpha warmup scale and pass to CIWAE loss
-        alpha_scale = self._compute_alpha_scale()
-        
-        # Compute CIWAE loss with k importance samples
-        output = self.model.compute_iwae_loss(
+
+        output = self.model.compute_elbo_loss(
             S=S,
             S_static=S_static,
             r=r,
-            num_samples=self.training_config.num_iwae_samples,
             mask=mask,
             free_bits_lambda=self.training_config.free_bits_lambda,
-            alpha_scale=alpha_scale,
         )
-        
-        loss = output['loss']
-        log_likelihood = output['log_likelihood']
-        kl_divergence = output['kl_divergence']
-        
-        # Log metrics
-        self.log('train/loss', loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log('train/log_likelihood', log_likelihood, on_step=True, on_epoch=True)
-        self.log('train/kl_divergence', kl_divergence, on_step=True, on_epoch=True)
-        self.log('train/alpha_scale', alpha_scale, on_step=True, on_epoch=False)
 
-        # Free bits diagnostics
+        loss = output['loss']
+
+        self.log('train/loss', loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log('train/log_likelihood', output['log_likelihood'], on_step=True, on_epoch=True)
+        self.log('train/kl_divergence', output['kl_divergence'], on_step=True, on_epoch=True)
+
         if self.training_config.free_bits_lambda > 0.0:
-            self.log('train/free_bits_penalty', output['free_bits_penalty'], on_step=True, on_epoch=False)
-            if 'kl_approx_per_factor' in output:
-                self.log('train/kl_approx_min_factor', output['kl_approx_per_factor'].min(), on_step=True, on_epoch=False)
-        
-        # Compute effective sample size from importance weights
-        log_weights = output['log_weights']  # [batch, K]
-        weights = torch.exp(log_weights - torch.logsumexp(log_weights, dim=1, keepdim=True))
-        ess = 1.0 / torch.sum(weights ** 2, dim=1).mean()
-        self.log('train/ess', ess, on_step=True, on_epoch=True)
-        
-        # Log learned prior parameters (every 100 steps to monitor convergence)
+            self.log('train/free_bits_penalty', output['free_bits_penalty'],
+                     on_step=True, on_epoch=False)
+
+        # Health metrics every 100 steps: watch for posterior collapse
         if self.global_step % 100 == 0:
-            mu_z, sigma_z, nu_z = self.model.prior.get_params()
-            self.log('train/prior_sigma_z_mean', sigma_z.mean(), on_step=True, on_epoch=False)
-            self.log('train/prior_sigma_z_std', sigma_z.std(), on_step=True, on_epoch=False)
-            self.log('train/prior_nu_z', nu_z, on_step=True, on_epoch=False)
-            
-            # Log decoder parameter statistics
-            if 'alpha' in output:
-                self.log('train/alpha_mean', output['alpha'].mean(), on_step=True, on_epoch=False)
-                self.log('train/alpha_std', output['alpha'].std(), on_step=True, on_epoch=False)
-            if 'sigma' in output:
-                self.log('train/sigma_mean', output['sigma'].mean(), on_step=True, on_epoch=False)
-                self.log('train/sigma_std', output['sigma'].std(), on_step=True, on_epoch=False)
-            if 'nu' in output:
-                self.log('train/nu_mean', output['nu'].mean(), on_step=True, on_epoch=False)
-        
+            mu_q = output['mu_q']           # [batch, F]
+            log_sigma_q = output['log_sigma_q']  # [batch, F]
+            sigma_q = torch.exp(log_sigma_q)
+
+            # σ_q_mean ≈ 1.0 at init; collapses toward 0 if prior dominates
+            self.log('train/sigma_q_mean', sigma_q.mean(), on_step=True, on_epoch=False)
+            self.log('train/sigma_q_min', sigma_q.min(), on_step=True, on_epoch=False)
+            # μ_q_norm: should be non-zero when factors carry signal
+            self.log('train/mu_q_norm', mu_q.norm(dim=-1).mean(), on_step=True, on_epoch=False)
+            # β_norm: loading matrix; should grow during training
+            alpha = output['alpha']  # [batch, N]
+            sigma = output['sigma']  # [batch, N]
+            self.log('train/alpha_mean', alpha.mean(), on_step=True, on_epoch=False)
+            self.log('train/alpha_std', alpha.std(), on_step=True, on_epoch=False)
+            self.log('train/sigma_mean', sigma.mean(), on_step=True, on_epoch=False)
+            self.log('train/kl_min_factor', output['kl_per_factor'].min(), on_step=True, on_epoch=False)
+            self.log('train/kl_max_factor', output['kl_per_factor'].max(), on_step=True, on_epoch=False)
+
         return loss
-    
+
+    # ── Validation ────────────────────────────────────────────────────────────
+
     def validation_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
-        """Validation step computes NLL_joint.
-        
-        Args:
-            batch: Tuple of (S, S_static, r, mask)
-            batch_idx: Batch index
-            
-        Returns:
-            Loss tensor
-        """
         S, S_static, r, mask = batch
-        
-        # Use more samples for validation (paper: 100 for NLL_joint, using 50 for speed)
-        num_val_samples = 50
-        
-        output = self.model.compute_iwae_loss(
+
+        output = self.model.compute_elbo_loss(
             S=S,
             S_static=S_static,
             r=r,
-            num_samples=num_val_samples,
-            mask=mask
+            mask=mask,
         )
-        
-        loss = output['loss']
-        log_likelihood = output['log_likelihood']
-        kl_divergence = output['kl_divergence']
-        
-        # Compute NLL_joint: -log p(r|F) averaged over batch
-        # loss is already negative ELBO, which approximates NLL
-        N_valid = mask.sum(dim=1).float()  # [batch]
-        nll_joint_per_stock = loss  # Already averaged
-        
-        self.log('val/loss', loss, on_step=False, on_epoch=True, prog_bar=True)
-        self.log('val/nll_joint', loss, on_step=False, on_epoch=True)
-        self.log('val/log_likelihood', log_likelihood, on_step=False, on_epoch=True)
-        self.log('val/kl_divergence', kl_divergence, on_step=False, on_epoch=True)
-        
-        # Compute ESS for validation
-        log_weights = output['log_weights']
-        weights = torch.exp(log_weights - torch.logsumexp(log_weights, dim=1, keepdim=True))
-        ess = 1.0 / torch.sum(weights ** 2, dim=1).mean()
-        self.log('val/ess', ess, on_step=False, on_epoch=True)
-        
-        return loss
-    
-    def configure_optimizers(self):
-        """Configure Adam optimizer with two param groups (paper Section 3.5).
 
-        Prior parameters (mu_z, log_sigma_z, log_nu_z_minus_4) use a scaled-down
-        learning rate to prevent sigma_z from collapsing faster than the encoder
-        can adapt.  All other parameters use the standard learning rate.
-        """
-        prior_params = list(self.model.prior.parameters())
-        prior_ids = {id(p) for p in prior_params}
-        other_params = [p for p in self.model.parameters() if id(p) not in prior_ids]
+        loss = output['loss']
+        self.log('val/loss', loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log('val/log_likelihood', output['log_likelihood'], on_step=False, on_epoch=True)
+        self.log('val/kl_divergence', output['kl_divergence'], on_step=False, on_epoch=True)
+
+        return loss
+
+    # ── Optimizer ─────────────────────────────────────────────────────────────
+
+    def configure_optimizers(self):
+        """Single Adam param group — all parameters at the same base LR."""
         optimizer = torch.optim.Adam(
-            [
-                {'params': other_params, 'lr': self.training_config.learning_rate},
-                {'params': prior_params,  'lr': self.training_config.learning_rate * self.training_config.prior_lr_scale},
-            ],
+            self.model.parameters(),
+            lr=self.training_config.learning_rate,
             weight_decay=self.training_config.weight_decay,
         )
         return optimizer
-    
+
+    # ── Polyak averaging ──────────────────────────────────────────────────────
+
     def on_train_batch_end(self, outputs, batch, batch_idx):
-        """Update Polyak averaged model after each training step.
-        
-        Paper Section 3.5: Polyak averaging starts at step 50,000
-        """
         if not self.use_polyak:
             return
-        
         current_step = self.global_step
-        
-        # Initialize Polyak model on first step after polyak_start_step
+
         if current_step == self.polyak_start_step and self.polyak_model is None:
             print(f"\nInitializing Polyak averaging at step {current_step}")
             self.polyak_model = deepcopy(self.model)
             for param in self.polyak_model.parameters():
                 param.requires_grad = False
             return
-        
-        # Update Polyak model if past start step
+
         if current_step >= self.polyak_start_step and self.polyak_model is not None:
             with torch.no_grad():
-                for param_current, param_polyak in zip(
+                for p_cur, p_poly in zip(
                     self.model.parameters(),
-                    self.polyak_model.parameters()
+                    self.polyak_model.parameters(),
                 ):
-                    # EMA update: θ_polyak = α * θ_polyak + (1 - α) * θ_current
-                    param_polyak.data.mul_(self.polyak_alpha).add_(
-                        param_current.data, alpha=(1.0 - self.polyak_alpha)
+                    p_poly.data.mul_(self.polyak_alpha).add_(
+                        p_cur.data, alpha=(1.0 - self.polyak_alpha)
                     )
-    
+
     def get_polyak_model(self) -> Optional[nn.Module]:
-        """Get Polyak-averaged model for inference/evaluation."""
         return self.polyak_model
-    
+
+    # ── Prediction ────────────────────────────────────────────────────────────
+
     def predict_step(self, batch: tuple, batch_idx: int) -> Dict[str, torch.Tensor]:
-        """Prediction step for inference.
-        
-        Args:
-            batch: Tuple of (S, S_static, r, mask) - r may be None
-            batch_idx: Batch index
-            
-        Returns:
-            Dictionary with predictions
-        """
         S, S_static, r, mask = batch
-        
-        # Use Polyak model if available
         model_to_use = self.polyak_model if self.polyak_model is not None else self.model
-        
-        # Generate predictions (samples from prior)
-        output = model_to_use.predict(
-            S=S,
-            S_static=S_static,
-            num_samples=1,
-            return_factors=False
-        )
-        
-        return output
+        return model_to_use.predict(S=S, S_static=S_static, num_samples=1, return_factors=False)
 
 
 __all__ = ["NeuralFactorsLightning"]

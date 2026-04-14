@@ -1,10 +1,7 @@
-"""Models package for NeuralFactors implementation.
-
-Exports main classes and utility functions for VAE-based factor learning.
-"""
+"""Models package for NeuralFactors implementation."""
 
 from .stock_embedder import StockEmbedder
-from .prior import StudentTPrior
+from .encoder import DeepSetEncoder
 from .neuralfactors import NeuralFactors
 
 from . import encoder
@@ -12,8 +9,8 @@ from . import decoder
 
 __all__ = [
     "NeuralFactors",
-    "StockEmbedder", 
-    "StudentTPrior",
+    "StockEmbedder",
+    "DeepSetEncoder",
     "encoder",
-    "decoder"
+    "decoder",
 ]

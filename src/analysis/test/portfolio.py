@@ -143,11 +143,10 @@ def compute_portfolio_metrics(model, dataset, returns_std, mode, device, output_
             r = r.unsqueeze(0).to(device)
             mask = mask.unsqueeze(0).to(device)
 
-            alpha, B, sigma, nu, mu_q, L_q = model.model.encode(S, S_static, r, mask)
-            mu_z, Sigma_z = model.model.prior.to_normal_params()
+            alpha, B, sigma, mu_q, log_sigma_q = model.model.encode(S, S_static, r, mask)
 
-            r_mean = decoder.marginal_mean(alpha[0], B[0], mu_z)
-            r_cov = decoder.marginal_covariance(B[0], Sigma_z, sigma[0])
+            r_mean = decoder.marginal_mean(alpha[0], B[0])
+            r_cov = decoder.marginal_covariance(B[0], sigma[0])
 
             if r_mean.dim() == 2:
                 r_mean = r_mean[0]

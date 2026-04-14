@@ -68,9 +68,8 @@ def compute_covariance_metrics(model, dataloader, dataset, mode, returns_std, de
                 continue
 
             # Predicted covariance for today's universe
-            alpha, B, sigma, nu, mu_q, L_q = model.model.encode(S, S_static, r, mask)
-            mu_z, Sigma_z = model.model.prior.to_normal_params()
-            cov_pred = decoder.marginal_covariance(B[0], Sigma_z, sigma[0])
+            alpha, B, sigma, mu_q, log_sigma_q = model.model.encode(S, S_static, r, mask)
+            cov_pred = decoder.marginal_covariance(B[0], sigma[0])
             if cov_pred.dim() == 3:
                 cov_pred = cov_pred[0]
             cov_pred = cov_pred.cpu().numpy() * (returns_std ** 2)
@@ -143,15 +142,28 @@ def plot_cov_metrics(cov_df, output_dir):
     if len(cov_df) == 0:
         return
 
+    arr = np.asarray(cov_df['mse_cov'], dtype=float)
+    lo, hi = np.nanpercentile(arr, 1), np.nanpercentile(arr, 99)
+    margin = max(abs(hi - lo) * 0.1, abs(hi) * 0.1, 1e-9)
+    n_clipped = int(np.sum(arr > hi + margin))
+
     plt.figure(figsize=(12, 6))
     plt.plot(cov_df['date'], cov_df['mse_cov'], alpha=0.7, linewidth=1.5)
+    plt.ylim(max(0, lo - margin), hi + margin)
     plt.xlabel('Date')
     plt.ylabel('MSE')
     plt.title('Covariance Prediction Error Over Time')
     plt.grid(True, alpha=0.3)
+    if n_clipped:
+        plt.annotate(
+            f"{n_clipped} spike(s) clipped (max={arr.max():.4f})",
+            xy=(0.99, 0.97), xycoords='axes fraction',
+            ha='right', va='top', fontsize=8,
+            color='grey', style='italic',
+        )
     plt.tight_layout()
 
     output_path = output_dir / "plots" / "cov_mse_timeseries.png"
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
-    print(f"✓ Covariance plot saved to: {output_path}")
+    print(f"[OK] Covariance plot saved to: {output_path}")

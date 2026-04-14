@@ -27,7 +27,6 @@ class StockEmbedder(nn.Module):
         sigma_min: float = 0.1,
         sigma_max: float = 3.0,
         alpha_max: float = 3.0,
-        nu_offset: float = 4.0,
         lookback: int = 256,  # Paper uses 256 (Table 3, Section 5.1.4)
         config: Optional[ModelConfig] = None,
     ):
@@ -47,7 +46,6 @@ class StockEmbedder(nn.Module):
             sigma_min = config.sigma_min
             sigma_max = config.sigma_max
             alpha_max = config.alpha_max
-            nu_offset = config.nu_offset
             lookback = config.lookback
         
         # Validate required parameters
@@ -64,7 +62,6 @@ class StockEmbedder(nn.Module):
         self.sigma_min = sigma_min
         self.sigma_max = sigma_max
         self.alpha_max = alpha_max
-        self.nu_offset = nu_offset
         self.lookback = lookback  # Store for validation
 
         # Step 1: per-timestep projection
@@ -85,12 +82,16 @@ class StockEmbedder(nn.Module):
         self.alpha_head = nn.Linear(h, 1)
         self.beta_head = nn.Linear(h, F)
         self.sigma_head = nn.Linear(h, 1)
-        self.nu_head = nn.Linear(h, 1)
         
         # Initialize beta_head with moderate weights so factor contribution is
         # comparable to return scale at init: std(β'z) ≈ sqrt(F) * 0.1 * sigma_z ≈ 0.4
         nn.init.normal_(self.beta_head.weight, mean=0.0, std=0.1)
         nn.init.zeros_(self.beta_head.bias)
+        
+        # Initialize sigma_head bias so sigmoid output ≈ 0.993 → sigma ≈ 2.98 at init.
+        # This gives a conservatively wide noise model during Phase 1 (sigma frozen),
+        # which is better for factor development than the default sigmoid(0) ≈ 1.55.
+        nn.init.constant_(self.sigma_head.bias, 5.0)
 
     def _act(self, x: torch.Tensor) -> torch.Tensor:
         """Apply activation function."""
@@ -103,7 +104,7 @@ class StockEmbedder(nn.Module):
         raise ValueError(f"Unknown activation function: {self.activation}. Must be 'gelu', 'relu', or 'silu'.")
 
     def forward(self, S: torch.Tensor, S_static: torch.Tensor):
-        """S[N,L,d_ts], S_static[N,d_static] -> alpha[N], beta[N,F], sigma[N], nu[N]"""
+        """S[N,L,d_ts], S_static[N,d_static] -> alpha[N], beta[N,F], sigma[N]"""
         if S.dim() != 3:
             raise ValueError(f"S must be (N,L,d_ts), got {tuple(S.shape)}")
         
@@ -162,14 +163,12 @@ class StockEmbedder(nn.Module):
         alpha = self.alpha_head(H3).squeeze(-1)  # (N,)
         beta = self.beta_head(H3)  # (N, F)
         sigma = self.sigma_min + (self.sigma_max - self.sigma_min) * torch.sigmoid(self.sigma_head(H3)).squeeze(-1)  # (N,)
-        nu = F.softplus(self.nu_head(H3)).squeeze(-1) + self.nu_offset  # (N,)
-        
-        # [STABILITY] Clamp outputs to prevent numerical issues
+
+        # Clamp outputs to prevent numerical issues
         alpha = torch.clamp(alpha, min=-self.alpha_max, max=self.alpha_max)
         beta = torch.clamp(beta, min=-10.0, max=10.0)
-        nu = torch.clamp(nu, min=self.nu_offset, max=100.0)
 
-        return alpha, beta, sigma, nu
+        return alpha, beta, sigma
 
 
 __all__ = ["StockEmbedder"]

@@ -58,7 +58,7 @@ def parse_args():
     )
     
     # Model hyperparameters
-    parser.add_argument("--num_factors", type=int, default=64, help="Number of latent factors F")
+    parser.add_argument("--num_factors", type=int, default=16, help="Number of latent factors F")
     parser.add_argument("--hidden_size", type=int, default=256, help="Hidden dimension h")
     parser.add_argument("--lookback", type=int, default=256, help="Lookback window L")
     parser.add_argument("--dropout", type=float, default=0.25, help="Dropout rate")
@@ -69,13 +69,11 @@ def parse_args():
     # Training hyperparameters
     parser.add_argument("--learning_rate", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--weight_decay", type=float, default=1e-6, help="Weight decay")
-    parser.add_argument("--num_iwae_samples", type=int, default=20, help="k in IWAE loss")
-    parser.add_argument("--max_steps", type=int, default=200_000, help="~58 epochs (~9 hours on RTX 3060)")
+    parser.add_argument("--max_steps", type=int, default=250_000, help="~72 epochs (~18 hours on RTX 3060)")
     parser.add_argument("--val_every_n_steps", type=int, default=100_000, help="Validate only at the end")
     parser.add_argument("--polyak_start_step", type=int, default=None, help="Polyak averaging start (default: max_steps // 2)")
     parser.add_argument("--polyak_alpha", type=float, default=0.999, help="Polyak EMA decay")
-    parser.add_argument("--prior_lr_scale", type=float, default=0.1, help="Prior param LR = learning_rate * prior_lr_scale (prevents sigma_z collapse)")
-    parser.add_argument("--free_bits_lambda", type=float, default=0.0, help="Min KL floor per factor in nats; 0 = disabled")
+    parser.add_argument("--free_bits_lambda", type=float, default=0.1, help="Min KL floor per factor in nats; 0 = disabled")
     
     # Data split dates (adjusted for IBX data 2005-2025)
     parser.add_argument("--train_end", type=str, default="2018-12-31", help="Training end date")
@@ -158,11 +156,9 @@ def main():
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
         max_steps=args.max_steps,
-        num_iwae_samples=args.num_iwae_samples,
         val_every_n_steps=args.val_every_n_steps,
         polyak_start_step=args.polyak_start_step,
         polyak_alpha=args.polyak_alpha,
-        prior_lr_scale=args.prior_lr_scale,
         free_bits_lambda=args.free_bits_lambda,
         checkpoint_dir=str(checkpoint_dir),
         log_dir=args.log_dir,
@@ -217,22 +213,21 @@ def main():
         train_dataset,
         batch_size=1,
         shuffle=True,
-        num_workers=4,  # Parallel data loading for better performance
+        num_workers=2,
         collate_fn=collate_fn,
         pin_memory=True if args.gpus > 0 else False,
-        persistent_workers=True,  # Keep workers alive between epochs,
-        prefetch_factor=2,  # Prefetch batches for smoother training
+        persistent_workers=True,
+        prefetch_factor=2,
     )
     
     val_loader = DataLoader(
         val_dataset,
         batch_size=1,
         shuffle=False,
-        num_workers=2,  # Parallel data loading for better performance
+        num_workers=1,
         collate_fn=collate_fn,
         pin_memory=True if args.gpus > 0 else False,
-        persistent_workers=True,  # Keep workers alive between epochs
-        prefetch_factor=2,  # Prefetch batches for smoother training
+        persistent_workers=True,
     )
     
     print(f"\nDataLoaders created:")
@@ -242,12 +237,7 @@ def main():
     # Calculate max_epochs for proper epoch display in progress bar
     batches_per_epoch = len(train_loader)
     max_epochs = (args.max_steps + batches_per_epoch - 1) // batches_per_epoch  # Round up
-    print(f"  Max steps: {args.max_steps:,} → {max_epochs} epochs")
-    
-    # Calculate max_epochs for proper epoch display in progress bar
-    batches_per_epoch = len(train_loader)
-    max_epochs = (args.max_steps + batches_per_epoch - 1) // batches_per_epoch  # Round up
-    print(f"  Max steps: {args.max_steps:,} → {max_epochs} epochs")
+    print(f"  Max steps: {args.max_steps:,} -> {max_epochs} epochs")
     
     # Create Lightning module
     print("\n" + "="*80)
@@ -344,6 +334,18 @@ def main():
         
         try:
             import subprocess
+
+            # Flush GPU before spawning the analysis subprocess so there is no residual
+            # CUDA state from training that could trigger an access violation.
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+
+            # Prefer the Polyak-averaged weights for analysis (smoother, better quality).
+            # Fall back to the best Lightning checkpoint if the .pt was not saved.
+            analysis_ckpt = str(polyak_path) if (
+                lightning_module.polyak_model is not None and polyak_path.exists()
+            ) else checkpoint_callback.best_model_path
             
             # Save to results/training_analysis/
             analysis_dir = Path("results") / "training_analysis" / args.experiment_name
@@ -353,7 +355,7 @@ def main():
             analyze_cmd = [
                 sys.executable,
                 str(Path(__file__).parent.parent / "src" / "analysis" / "analyze.py"),
-                "--checkpoint", checkpoint_callback.best_model_path,
+                "--checkpoint", analysis_ckpt,
                 "--data_dir", args.data_dir,
                 "--output_dir", str(analysis_dir),
                 "--split", "test",
@@ -370,7 +372,7 @@ def main():
         except Exception as e:
             print(f"\nWarning: Automatic analysis failed: {e}")
             print("You can run analysis manually with:")
-            print(f"  python scripts/analyze.py --checkpoint {checkpoint_callback.best_model_path} --data_dir {args.data_dir}")
+            print(f"  python src/analysis/analyze.py --checkpoint {analysis_ckpt} --data_dir {args.data_dir}")
 
 
 if __name__ == "__main__":

@@ -1,279 +1,209 @@
-﻿# NeuralFactors: Replication Study
+# NeuralFactors (Simplified)
 
-Replication and adaptation of "NeuralFactors: A Novel Factor Learning Approach to Generative Modeling of Equities" by Achintya Gopal (arXiv:2408.01499v1), applied to Brazilian IBX equities (2005–2025).
+VAE-based latent factor model for Brazilian equities (B3/IBX).  
+Adapted from Gopal (2024, arXiv:2408.01499) with significant architectural simplifications to prevent posterior collapse on the Brazilian market (~95 tickers, 2005–2026).
 
-**Thesis context**: This repository accompanies the undergraduate thesis submitted to [institution]. It implements NeuralFactors from scratch in PyTorch, trains it on ~100 IBX constituents, and benchmarks it against a Probabilistic PCA (PPCA) baseline across four quantitative metrics: NLL, covariance MSE, VaR calibration, and min-variance portfolio performance.
+---
 
-## Repository Structure
+## Architecture
+
+| Component | Original (Gopal 2024) | This implementation |
+|-----------|----------------------|---------------------|
+| Prior | Learnable Student-T(μ,σ,ν) | Fixed N(0, I) |
+| Posterior | Analytical Cholesky (FP64) | DeepSet MLP |
+| Likelihood | Student-T | Gaussian |
+| Training objective | CIWAE (K=20) | ELBO (K=1) + free bits |
+
+### Why the changes?
+
+The original learnable prior collapsed on the Brazilian market: `sigma_z` decayed from 10.0 → 0.066 in the first 100k steps because the prior parameters shared the Adam update with the rest of the network and optimised faster than the encoder could track. The result was that the posterior collapsed to the (near-point-mass) prior — no factors were used — and out-of-sample Sharpe was 0.08 vs 0.55 for PPCA.
+
+Fix: remove the learnable prior entirely. KL is now `0.5 * sum(sigma_q^2 + mu_q^2 - 1 - 2*log_sigma_q)` in closed form, and the free-bits floor `max(0, lambda - KL_f)` per factor prevents trivial KL=0 solutions.
+
+### Model components
 
 ```
-TCC/
-├── data/
-│   ├── ibovespa.csv        # Ibovespa benchmark daily returns
-│   ├── parquets/           # Parquet format for efficient loading
-│   └── data_documentation.md
-├── src/
-│   ├── models/             # Core NeuralFactors model components
-│   │   ├── stock_embedder.py    # Stock feature encoder
-│   │   ├── encoder.py           # Variational posterior q(z|r)
-│   │   ├── decoder.py           # Likelihood p(r|z)
-│   │   ├── prior.py             # Prior distribution p(z)
-│   │   ├── neuralfactors.py     # Main model integration
-│   │   └── lightning_module.py  # PyTorch Lightning wrapper
-│   ├── utils/
-│   │   ├── config.py            # Model & training config
-│   │   ├── data_utils.py        # Data loading & preprocessing
-│   │   └── dataset.py           # PyTorch Dataset implementation
-│   └── analysis/           # NeuralFactors evaluation metrics
-├── PPCA/                   # PPCA baseline model
-│   ├── model.py            # Closed-form PPCA
-│   ├── loader.py           # Data loading and split indexing
-│   ├── evaluate.py         # CLI entry point
-│   └── analysis/           # NLL, covariance, VaR, portfolio metrics
-├── scripts/
-│   ├── train.py            # NeuralFactors training script
-│   └── test.py             # NeuralFactors evaluation script
-├── results/
-│   ├── compare.py          # Cross-model comparison script
-│   ├── evaluation/         # NeuralFactors evaluation outputs
-│   ├── ppca/               # PPCA evaluation outputs
-│   └── comparison/         # Side-by-side comparison tables
-├── checkpoints/            # Saved model checkpoints
-├── logs/                   # TensorBoard training logs
-└── requirements.txt
+StockEmbedder
+  Transformer(lookback=256, L=d_ts=76) -> h=256
+  alpha_head:  Linear(256 -> 1)   # idiosyncratic return alpha ~ N(0,alpha_max)
+  B_head:      Linear(256 -> F)   # factor loadings beta ~ unscaled
+  sigma_head:  Linear(256 -> 1)   # idiosyncratic vol in (sigma_min, sigma_max)
+
+DeepSetEncoder
+  phi:    MLP(4+F -> 64 -> 64, GELU)  # per-stock, no loops
+  pool:   masked mean over stocks
+  rho:    MLP(64 -> 128 -> 128, GELU)
+  mu_q:   Linear(128 -> F)
+  logσ_q: Linear(128 -> F)   # init weight_std=0.01, bias=0 -> sigma_q ~ 1.0
+
+Fixed prior: z ~ N(0, I_F)
+
+Gaussian decoder:
+  r_i | z ~ N(alpha_i + beta_i' z, sigma_i^2)
+```
+
+### ELBO loss
+
+```
+ELBO = E_q[sum_i log N(r_i; alpha_i + beta_i'z, sigma_i^2)]
+     - KL(q(z|r) || N(0,I))
+     + free_bits_penalty
+
+free_bits_penalty = sum_f max(0, lambda - KL_f)   # lambda=0.1 nats
 ```
 
 ---
 
-## Model Architecture
-
-NeuralFactors is a VAE-based generative model for equity returns. Each trading day, the model encodes N stocks into a shared F-dimensional latent factor space and decodes them through a linear factor structure with Student-T noise.
+## Repository layout
 
 ```
-Training:  q(z|r) → z → p(r|z)   [encoder + decoder]
-Inference: p(z)   → z → p(r|z)   [prior + decoder]
-```
+src/
+  models/
+    stock_embedder.py     StockEmbedder: Transformer -> (alpha, B, sigma)
+    encoder.py            DeepSetEncoder: (r, alpha, B, sigma) -> (mu_q, log_sigma_q)
+    decoder.py            Gaussian decoder utilities (log_pdf, sample, marginal_cov)
+    neuralfactors.py      NeuralFactors: encode() + compute_elbo_loss() + predict()
+    lightning_module.py   PyTorch Lightning wrapper, Polyak averaging
+  utils/
+    config.py             ModelConfig, EncoderConfig, TrainingConfig
+    dataset.py            NeuralFactorsDataset (parquet loader, normalisation)
+    data_utils.py         discover_feature_dims, compute_returns_std_from_train
+  analysis/
+    analyze.py            Post-training analysis: loss curves, factor distributions
+    test/
+      loader.py           load_model_and_data()
+      nll.py              Gaussian ELBO-based NLL metrics
+      covariance.py       Predicted vs empirical rolling covariance
+      var.py              VaR calibration (Kupiec + Christoffersen)
+      portfolio.py        Min-variance portfolio backtest vs Ibovespa
 
-### Stock Embedder (`src/models/stock_embedder.py`)
+scripts/
+  train.py    Train NeuralFactors from scratch
+  test.py     Full evaluation suite (NLL, covariance, VaR, portfolio)
+  run.py      Pipeline: train -> evaluate in one command
 
-Encodes per-stock time-series and static features into factor-specific parameters using a Transformer encoder followed by a two-layer MLP.
+data/
+  parquets/
+    x_ts.parquet      [date, ticker, feature_1..feature_76]  daily time-series
+    x_static.parquet  [ticker, feature_1..feature_11]        static fundamentals
+    prices.parquet    [date, ticker, price]
 
-- **Input**: `S[N, L, d_ts]` (lookback window, L=256), `S_static[N, d_static]`
-- **Output**: `alpha[N]`, `beta[N, F]`, `sigma[N]`, `nu[N]` — parameters of the per-stock Student-T likelihood
+checkpoints/<experiment>/
+  config.json        Serialised ModelConfig + TrainingConfig
+  polyak_model.pt    Polyak-averaged weights (used for evaluation)
+  last.ckpt          Latest Lightning checkpoint
 
-### Encoder (`src/models/encoder.py`)
-
-Computes the analytical variational posterior q(z|r) via closed-form linear regression (Paper Eq. 8):
-
-```
-Σ_q = (Σ_z⁻¹ + Bᵀ Σ_x⁻¹ B)⁻¹
-μ_q = Σ_q (Σ_z⁻¹ μ_z + Bᵀ Σ_x⁻¹ (r − α))
-```
-
-Used only during training. Numerical stability ensured via FP64 computation and adaptive Cholesky jitter.
-
-### Decoder (`src/models/decoder.py`)
-
-Computes log p(r|z) and samples returns under the linear factor model with Student-T noise (Paper Section 3.2):
-
-```
-r_i ~ Student-T(α_i + βᵢᵀ z, σ_i, ν_i)
-```
-
-Also provides closed-form marginal mean `E[r] = α + B μ_z` and covariance `Cov[r] = diag(σ²) + B Σ_z Bᵀ` for portfolio optimization without sampling.
-
-### Prior (`src/models/prior.py`)
-
-Learnable time-homogeneous Student-T prior p(z) with constrained parameters (σ > 0, ν > 4):
-
-```
-z ~ Student-T(ν_z, μ_z, σ_z)
-```
-
-All parameters are learned via gradient descent alongside the rest of the model.
-
-### NeuralFactors (`src/models/neuralfactors.py`)
-
-Main module integrating all components. Computes CIWAE loss (Paper Eq. 7) with K=20 importance samples during training; switches to prior sampling during inference.
-
----
-
-## Configuration (`src/utils/config.py`)
-
-Centralized hyperparameter configuration with paper defaults:
-
-```python
-ModelConfig:      num_factors=64, hidden_size=256, lookback=256, dropout=0.25, nhead=4, num_layers=2
-TrainingConfig:   learning_rate=1e-4, weight_decay=1e-6, max_steps=100000, num_iwae_samples=20
-                  use_polyak=True, polyak_alpha=0.999, polyak_start_step=50000
-PriorConfig:      mu_z_init=0.0, sigma_z_init=1.0, nu_z_init=10.0
-EncoderConfig:    jitter_multiplier=2.0, use_fp64=True
+logs/<experiment>/   TensorBoard event files
+results/evaluation/<experiment>/
+  metrics/           CSV tables (nll_timeseries.csv, covariance.csv, ...)
+  plots/             PNG figures
 ```
 
 ---
 
-## Data Pipeline
+## Setup
 
-Data is loaded from `data/parquets/` (long format: `date`, `ticker`, feature columns). Key steps in `src/utils/data_utils.py`:
-
-1. **`load_parquets()`** — loads time-series features, static features, and closing prices
-2. **`compute_returns()`** — computes log returns; `±Inf` from zero/negative prices are replaced with `NaN` for proper masking
-3. **`compute_returns_std_from_train()`** — computes return normalization std from the training period (≈0.0627 for IBX vs. ≈0.0267 for S&P 500)
-4. **`split_by_date()`** — partitions into train/val/test
-
-`src/utils/dataset.py` implements a PyTorch `Dataset` that yields, for each trading day, lookback tensors `S[N, L, d_ts]`, static features `S_static[N, d_static]`, returns `r[N]`, and a validity mask `mask[N]`.
-
-**Data splits** (adjusted for IBX availability):
-- Training: 2005-01-01 – 2018-12-31 (≈3,458 trading days)
-- Validation: 2019-01-01 – 2022-12-31 (≈994 trading days)
-- Test: 2023-01-01 – 2025-11-04 (≈712 trading days)
+```bash
+python -m venv .venv
+.venv\Scripts\activate          # Windows
+pip install -r requirements.txt
+```
 
 ---
 
 ## Training
 
-Training follows Paper Section 3.5 via PyTorch Lightning (`src/models/lightning_module.py`):
-
-| Hyperparameter | Value |
-|---|---|
-| Optimizer | Adam, lr=1e-4, weight_decay=1e-6 |
-| Loss | CIWAE, K=20 importance samples |
-| Batch size | 1 (all stocks from one trading day) |
-| Total steps | 100,000 |
-| Validation frequency | Every 1,000 steps (NLL_joint) |
-| Polyak averaging | α=0.999, starts at step 50,000 |
-| Gradient clipping | norm=1.0 |
-
 ```bash
-# Full training
-python scripts/train.py --data_dir data --checkpoint_dir checkpoints
+# Standard 250k run, F=16 factors
+python scripts/train.py \
+    --experiment_name simplified_v1 \
+    --num_factors 16 \
+    --max_steps 250000 \
+    --free_bits_lambda 0.1
 
-# Single-batch smoke test
-python scripts/train.py --fast_dev_run
+# Equivalent via pipeline script (train + evaluate in one command)
+python scripts/run.py \
+    --experiment_name simplified_v1 \
+    --num_factors 16 \
+    --max_steps 250000 \
+    --free_bits_lambda 0.1
 ```
 
-Checkpoints are saved to `checkpoints/neuralfactors/`, Polyak weights to `polyak_model.pt`, and TensorBoard logs to `logs/neuralfactors/`.
+Key hyperparameters:
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--num_factors` | 16 | Latent factor dimension F |
+| `--hidden_size` | 256 | Transformer hidden dim h |
+| `--lookback` | 256 | Days of history fed to transformer |
+| `--learning_rate` | 1e-4 | Adam LR (single group, all params) |
+| `--max_steps` | 250000 | Gradient updates |
+| `--free_bits_lambda` | 0.1 | Min KL nats per factor (0 disables) |
+| `--polyak_alpha` | 0.999 | EMA decay; Polyak starts at step//2 |
+
+Training on RTX 3060 (12 GB): ~18–20 hours for 250k steps.
+
+### Monitoring training health
+
+Open TensorBoard to watch for collapse:
+
+```bash
+tensorboard --logdir logs/simplified_v1
+```
+
+Key metrics:
+- `train/sigma_q_mean` — should stay near 1.0; collapse if → 0
+- `train/kl_min_factor` — should exceed `free_bits_lambda`; 0 = unused factor
+- `train/kl_divergence` — total KL; healthy range ~2–15 nats
+- `train/log_likelihood` — should decrease steadily
 
 ---
 
 ## Evaluation
 
-Implemented in `scripts/test.py`. Four metrics match the paper's evaluation protocol:
-
-| Metric | Description |
-|---|---|
-| **NLL** | Joint and per-stock negative log-likelihood via IWAE |
-| **Covariance MSE** | Predicted vs. 20-day empirical rolling covariance |
-| **VaR calibration** | Theoretical vs. empirical violation rates at 1%, 5%, 10%; Kupiec (1995) POF test and Christoffersen (1998) conditional coverage test |
-| **Portfolio backtest** | Min-variance portfolio: return (CAGR), vol, Sharpe, Sortino, Calmar, max drawdown, turnover, concentration, net-of-TC Sharpe |
-
 ```bash
-# Debug mode (first 50 dates, ~5 min, NeuralFactors only)
-python scripts/test.py --checkpoint checkpoints/neuralfactors/last.ckpt --mode debug
-
-# Full paper evaluation (all dates, ~30–40 min NeuralFactors + ~20 min PPCA + comparison)
-python scripts/test.py --checkpoint checkpoints/neuralfactors/last.ckpt --mode paper
+python scripts/test.py \
+    --checkpoint checkpoints/simplified_v1/polyak_model.pt \
+    --experiment_name simplified_v1 \
+    --mode paper \
+    --num_samples 100
 ```
 
-`test.py` automatically runs PPCA baseline evaluation and generates cross-model comparison tables. Results are saved to:
-- `results/evaluation/neuralfactors/` — NeuralFactors metrics and plots
-- `results/ppca/ppca/` — PPCA metrics and plots
-- `results/comparison/` — side-by-side comparison tables
-
-### Portfolio Backtest Details
-
-The portfolio backtest computes daily min-variance weights from the model-predicted covariance matrix, then realises returns on the next trading day using only tickers common to both days.
-
-**Metrics reported:**
-- **Performance**: Total return, annualised return (geometric CAGR), annualised volatility, Sharpe ratio (Rf=0), Sortino ratio, Calmar ratio, max drawdown
-- **Portfolio characteristics**: Average daily turnover, annualised turnover, average max weight, average effective N (1/HHI)
-- **After transaction costs**: Net return and Sharpe assuming 10 bps proportional cost per one-way turnover
-- **Benchmark comparison**: Ibovespa total return, annualised return, Sharpe, excess return, information ratio
-
-### VaR Statistical Tests
-
-Beyond simple violation-rate error, VaR calibration includes:
-- **Kupiec (1995)**: Likelihood-ratio test for whether the empirical violation rate equals the theoretical level
-- **Christoffersen (1998)**: Tests that violations are independent (no clustering), important for risk management
-
-### Factor Exposure Visualization
-
-`src/analysis/analyze.py` produces a cross-sectional t-SNE of factor exposures alongside the other analysis plots.
-
-```bash
-python scripts/analyze.py --checkpoint checkpoints/neuralfactors/last.ckpt --data_dir data
-
-# Specify a representative date instead of using the split midpoint
-python scripts/analyze.py --checkpoint checkpoints/neuralfactors/last.ckpt \
-    --snapshot_date 2024-01-15
-```
-
-**How the t-SNE snapshot works**: one trading day is selected (`--snapshot_date`, or the midpoint of the split by default); the model encodes all valid IBX tickers present on that day into their factor-loading vectors `β[N, F]`; t-SNE reduces the F-dimensional space to 2D. Each point is therefore exactly one ticker — no temporal stacking. Points are coloured by economic sector using `data/parquets/sectors.parquet`, and the ~25 most prominent index constituents are labelled directly on the plot.
-
-**Sector reference** (`sectors.parquet` — 1,419 tickers, 11 sectors):
-
-| sector_id | setor_economico |
-|---|---|
-| 0 | Bens industriais |
-| 1 | Comunicações |
-| 2 | Consumo cíclico |
-| 3 | Consumo não cíclico |
-| 4 | Financeiro |
-| 5 | Materiais básicos |
-| 6 | Outros |
-| 7 | Petróleo, gás e biocombustíveis |
-| 8 | Saúde |
-| 9 | Tecnologia da informação |
-| 10 | Utilidade pública |
-
-Other plots generated by `analyze.py`: factor loadings heatmap (`factor_exposures_heatmap.png`), hierarchical clustering of the F factors (`factor_clustering.png`), decoder parameter distributions (`decoder_param_distributions.png`), prior parameter histograms (`prior_parameters.png`), and TensorBoard training curves (`training_curves.png`).
+Metrics produced:
+- **NLL** — joint and per-stock Gaussian log-likelihood
+- **Covariance** — predicted vs empirical 20-day rolling covariance MSE
+- **VaR** — 1%, 5%, 10% quantile calibration (Kupiec + Christoffersen tests)
+- **Portfolio** — minimum-variance backtest vs Ibovespa benchmark (Sharpe, Sortino, max drawdown)
 
 ---
 
-## PPCA Baseline
+## Data
 
-Probabilistic PCA serves as a closed-form baseline. The model is a linear Gaussian factor model with isotropic noise:
+Raw parquet files are not committed to this repository.  
+Expected location: `data/parquets/{x_ts,x_static,prices}.parquet`.  
+See `data/data_documentation.md` for field descriptions.
 
-```
-x = W z + μ + ε,   z ~ N(0, I_F),   ε ~ N(0, σ² I_N)
-=> x ~ N(μ, W Wᵀ + σ² I)
-```
-
-Parameters are fit via closed-form MLE (top-F eigendecomposition of the sample covariance). Log-likelihood is computed using the Woodbury identity, avoiding any N×N matrix inversion. A 252-day rolling window is used for time-varying estimation.
-
-**PPCA is run automatically** by `scripts/test.py` in parallel with NeuralFactors evaluation. To run it standalone:
-
-```bash
-python PPCA/evaluate.py --mode debug   # first 50 test dates (~1 min)
-python PPCA/evaluate.py --mode paper   # all 712 test dates
-```
-
-Key parameters: `--num_factors 12`, `--window_size 252`. Same train/val/test splits as NeuralFactors.
+Data period: 2005-01-03 to 2026  
+Train split: up to 2018-12-31  
+Validation split: 2019-01-01 to 2022-12-31  
+Test split: 2023-01-01 onwards  
+Universe: ~95 IBX tickers (variable over time due to index changes)
 
 ---
 
-## Cross-Model Comparison
+## PPCA baseline
 
-`results/compare.py` aggregates evaluation outputs into side-by-side tables. **This is run automatically** at the end of `scripts/test.py`. To run it manually:
+The `PPCA/` directory provides a probabilistic PCA baseline for comparison.  
+After training NeuralFactors, run:
 
 ```bash
-python results/compare.py \
-    --results "NeuralFactors:results/evaluation/neuralfactors" \
-    --results "PPCA:results/ppca/ppca"
+python results/compare.py --experiment_name simplified_v1
 ```
 
-Output tables (in `results/comparison/`):
-
-| File | Contents |
-|---|---|
-| `comparison_nll.csv` | NLL mean and std per model |
-| `comparison_cov.csv` | Covariance MSE mean and std per model |
-| `comparison_var.csv` | VaR error, empirical violation rates, Kupiec/Christoffersen p-values |
-| `comparison_portfolio.csv` | Return, vol, Sharpe, Sortino, Calmar, turnover, max drawdown, net Sharpe |
-| `comparison_formatted.csv` | Paper Table 2 style (one row per model) |
+This produces side-by-side tables for NLL, covariance MSE, VaR calibration, and portfolio metrics.
 
 ---
 
-## Paper Reference
+## Reference
 
-Gopal, A. (2024). *NeuralFactors: A Novel Factor Learning Approach to Generative Modeling of Equities*. arXiv:2408.01499v1 [q-fin.ST].
+Gopal, A. (2024). *NeuralFactors: A Novel Factor Learning Approach to Generative Modeling of Equities*. arXiv:2408.01499.

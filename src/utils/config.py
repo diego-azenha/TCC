@@ -1,61 +1,60 @@
-"""Configuration dataclasses for NeuralFactors model.
-
-All hyperparameter values are based on the paper:
-"NeuralFactors: A Novel Factor Learning Approach to Generative Modeling of Equities"
-by Achintya Gopal (arXiv:2408.01499v1)
-"""
+"""Configuration dataclasses for NeuralFactors model."""
 
 from dataclasses import dataclass
 from typing import Literal
 
 
 @dataclass
-class ModelConfig:
-    """Model architecture hyperparameters.
-    
-    References from paper (Section 3.5):
-    - F (num_factors): 64 factors found optimal in ablation study (Table 3)
-    - h (hidden_size): 256 used throughout with dropout 0.25
-    - lookback: 256 days optimal (Table 3, Section 5.1.4)
-    - nhead, num_layers: 4 heads, 2 layers for transformer
-    - activation: GELU used in ablations
+class EncoderConfig:
+    """DeepSet encoder hyperparameters.
+
+    φ network: MLP(4 + F → phi_hidden → phi_hidden, GELU) — per-stock, shared weights.
+    After masked mean-pooling:
+    ρ network: MLP(phi_hidden → rho_hidden → rho_hidden, GELU) — context aggregation.
+    Output heads: μ_q (rho_hidden → F), log σ_q (rho_hidden → F).
     """
-    
-    # Core architecture
-    num_factors: int = 16  # F; 16 for Brazilian equity universe (~95 stocks); paper uses 64 for S&P500
-    hidden_size: int = 256  # h in paper, hidden dimension for all layers
-    
-    # Input dimensions (must be set based on data)
-    d_ts: int = None  # Dimension of time-series features per timestep
-    d_static: int = None  # Dimension of static features
-    
-    # Sequence model parameters
-    lookback: int = 256  # L in paper, lookback window size
-    nhead: int = 4  # Number of attention heads
-    num_layers: int = 2  # Number of transformer encoder layers
-    activation: Literal["gelu", "relu", "silu"] = "gelu"
-    dropout: float = 0.25  # Dropout rate (paper Section 3.5)
-    
-    # Output parameter constraints
-    sigma_min: float = 0.1   # Sigma lower bound via sigmoid (≈0.54% daily vol)
-    sigma_max: float = 3.0   # Sigma upper bound via sigmoid (≈16% daily vol)
-    alpha_max: float = 3.0   # Alpha clamp bound in normalised space (±3 ≈ ±16% daily return)
-    nu_offset: float = 4.0  # Minimum nu (degrees of freedom > 4 for finite kurtosis)
-    
-    # Numerical stability
-    use_fp64: bool = False  # Use float64 for encoder/decoder numerical stability
-    
-    # Sub-configurations (initialized in __post_init__)
-    prior_config: 'PriorConfig' = None
-    encoder_config: 'EncoderConfig' = None
-    
+    phi_hidden: int = 64    # Width of φ MLP hidden layers
+    rho_hidden: int = 128   # Width of ρ MLP hidden layers
+
     def __post_init__(self):
-        """Validate configuration."""
+        if self.phi_hidden <= 0:
+            raise ValueError(f"phi_hidden must be positive, got {self.phi_hidden}")
+        if self.rho_hidden <= 0:
+            raise ValueError(f"rho_hidden must be positive, got {self.rho_hidden}")
+
+
+@dataclass
+class ModelConfig:
+    """Model architecture hyperparameters."""
+
+    # Core architecture
+    num_factors: int = 16   # F; 16 for Brazilian equity universe
+    hidden_size: int = 256  # h — hidden dimension for StockEmbedder transformer
+
+    # Input dimensions (must be set based on data)
+    d_ts: int = None      # Dimension of time-series features per timestep
+    d_static: int = None  # Dimension of static features
+
+    # Sequence model parameters
+    lookback: int = 256   # L — lookback window size
+    nhead: int = 4        # Number of attention heads
+    num_layers: int = 2   # Number of transformer encoder layers
+    activation: Literal["gelu", "relu", "silu"] = "gelu"
+    dropout: float = 0.25
+
+    # Output parameter constraints
+    sigma_min: float = 0.1    # σ lower bound (normalised space)
+    sigma_max: float = 3.0    # σ upper bound (normalised space)
+    alpha_max: float = 3.0    # α clamp bound (normalised space)
+
+    # Sub-configuration (initialised in __post_init__)
+    encoder_config: 'EncoderConfig' = None
+
+    def __post_init__(self):
         if self.d_ts is None:
-            raise ValueError("d_ts (time-series feature dimension) must be specified")
+            raise ValueError("d_ts must be specified")
         if self.d_static is None:
-            raise ValueError("d_static (static feature dimension) must be specified")
-        
+            raise ValueError("d_static must be specified")
         if self.num_factors <= 0:
             raise ValueError(f"num_factors must be positive, got {self.num_factors}")
         if self.hidden_size <= 0:
@@ -67,175 +66,83 @@ class ModelConfig:
         if self.num_layers <= 0:
             raise ValueError(f"num_layers must be positive, got {self.num_layers}")
         if not 0.0 <= self.dropout < 1.0:
-            raise ValueError(f"dropout must be in [0, 1), got {self.dropout}")
+            raise ValueError(f"dropout must be in [0,1), got {self.dropout}")
         if self.sigma_min <= 0:
             raise ValueError(f"sigma_min must be positive, got {self.sigma_min}")
         if self.sigma_max <= self.sigma_min:
-            raise ValueError(f"sigma_max must be > sigma_min, got {self.sigma_max} <= {self.sigma_min}")
+            raise ValueError(f"sigma_max must be > sigma_min")
         if self.alpha_max <= 0:
             raise ValueError(f"alpha_max must be positive, got {self.alpha_max}")
-        if self.nu_offset < 4.0:
-            raise ValueError(f"nu_offset must be >= 4.0 for finite kurtosis, got {self.nu_offset}")
-        
-        # Initialize sub-configs if not provided
-        if self.prior_config is None:
-            self.prior_config = PriorConfig()
         if self.encoder_config is None:
             self.encoder_config = EncoderConfig()
 
 
 @dataclass
-class PriorConfig:
-    """Prior distribution hyperparameters.
-    
-    The prior is p(z) ~ Student-T(nu_z, mu_z, sigma_z) (Section 3.1, Equation 5).
-    These are the initial values; the actual prior parameters are learnable.
-    
-    References from paper:
-    - Prior is time-homogeneous (Section 3.5)
-    - Student-T distribution used for heavy tails
-    - Paper sets mu_z = 0 without loss of generality (Section 3.2)
-    """
-    
-    # Initial values for learnable prior parameters
-    mu_z_init: float = 0.0  # Initial mean (paper sets this to 0)
-    sigma_z_init: float = 1.0  # Initial scale matching normalized return scale (~1.0)
-    nu_z_init: float = 10.0  # Initial degrees of freedom (>4 required)
-    
-    def __post_init__(self):
-        """Validate configuration."""
-        if self.sigma_z_init <= 0:
-            raise ValueError(f"sigma_z_init must be positive, got {self.sigma_z_init}")
-        if self.nu_z_init <= 4.0:
-            raise ValueError(f"nu_z_init must be > 4.0 for finite kurtosis, got {self.nu_z_init}")
-
-
-@dataclass
-class EncoderConfig:
-    """Encoder (variational posterior) hyperparameters.
-    
-    The encoder computes q(z|r, F) ≈ N(mu_q, Sigma_q) using analytical
-    closed-form solution (Section 3.3, Equation 8).
-    """
-    
-    # Numerical stability parameters
-    eps: float = 1e-8  # Epsilon for inverse sigma computation
-    jitter_init: float = 1e-4  # Initial Cholesky jitter (increased for stability)
-    jitter_max: float = 10.0  # Maximum Cholesky jitter (greatly increased)
-    jitter_multiplier: float = 2.0  # Jitter increase factor (changed from 10x to 2x for stability)
-    use_fp64: bool = True  # Use float64 for numerical stability in encoder
-    
-    def __post_init__(self):
-        """Validate configuration."""
-        if self.jitter_init <= 0 or self.jitter_init >= self.jitter_max:
-            raise ValueError(f"Must have 0 < jitter_init < jitter_max, got {self.jitter_init}, {self.jitter_max}")
-        if self.jitter_multiplier <= 1.0:
-            raise ValueError(f"jitter_multiplier must be > 1.0, got {self.jitter_multiplier}")
-
-
-@dataclass
 class TrainingConfig:
-    """Training hyperparameters from paper Section 3.5.
-    
-    References:
-    - Optimizer: Adam with lr=1e-4, weight_decay=1e-6
-    - Batch size: 1 (one batch = all stocks from one day)
-    - Total training: 100,000 gradient updates
-    - Validation: Every 1,000 steps
-    - Polyak averaging: Starts at step 50,000 for stability
-    - IWAE: k=20 importance samples for training
-    """
-    
-    # Optimizer parameters
-    learning_rate: float = 1e-4  # Adam learning rate
-    weight_decay: float = 1e-6  # L2 regularization
-    
-    # Training procedure
-    max_steps: int = 250_000  # Total gradient updates (two-phase alpha warmup + fine-tuning)
-    num_iwae_samples: int = 20  # k in IWAE loss (Equation 3)
-    batch_size: int = 1  # Number of days per batch (paper: 1 day = all stocks)
-    
-    # Validation and checkpointing
-    val_every_n_steps: int = 10_000  # Validate only at the end (larger than max_steps)
-    
-    # Polyak (exponential moving average) for stability
-    use_polyak: bool = True
-    polyak_start_step: int = None  # Auto-set to max_steps // 2 in __post_init__ if None
-    polyak_alpha: float = 0.999  # EMA decay rate (not specified in paper, common default)
+    """Training hyperparameters."""
 
-    # Alpha warmup schedule (posterior collapse prevention)
-    # Phase 1 [0, alpha_warmup_steps): alpha_scale = 0  → forces factor learning via β
-    # Phase 2 [alpha_warmup_steps, alpha_warmup_steps + alpha_anneal_steps): linear ramp 0→1
-    # Phase 3 [alpha_warmup_steps + alpha_anneal_steps, ∞]: alpha_scale = 1 (normal training)
-    alpha_warmup_steps: int = 100_000  # Steps with alpha_scale = 0
-    alpha_anneal_steps: int = 50_000   # Steps to linearly ramp alpha_scale from 0 to 1
+    # Optimizer
+    learning_rate: float = 1e-4
+    weight_decay: float = 1e-6
+
+    # Training procedure
+    max_steps: int = 250_000
+    batch_size: int = 1
+
+    # Validation
+    val_every_n_steps: int = 10_000
+
+    # Polyak averaging
+    use_polyak: bool = True
+    polyak_start_step: int = None   # Auto: max_steps // 2
+    polyak_alpha: float = 0.999
 
     # Posterior collapse prevention
-    prior_lr_scale: float = 0.1    # Prior param LR = learning_rate * prior_lr_scale (10x slower)
-    free_bits_lambda: float = 0.0  # Min KL floor per factor in nats; 0 = disabled
-    
+    free_bits_lambda: float = 0.1   # Nats/factor; 0 disables
+
     # Paths
     checkpoint_dir: str = "checkpoints"
     log_dir: str = "logs"
-    
-    # Data normalization (from paper Section 5)
+
+    # Data normalisation
     normalize_returns: bool = True
-    returns_std: float = None  # Computed from training data or loaded from normalization_stats.json
-    
-    # Reproducibility
+    returns_std: float = None
+
+    # Reproducibility / device
     seed: int = 42
-    
-    # Device
-    device: str = "cuda"  # "cuda" or "cpu"
-    
+    device: str = "cuda"
+
     def __post_init__(self):
-        """Validate configuration."""
         if self.learning_rate <= 0:
             raise ValueError(f"learning_rate must be positive, got {self.learning_rate}")
         if self.weight_decay < 0:
             raise ValueError(f"weight_decay must be non-negative, got {self.weight_decay}")
         if self.max_steps <= 0:
             raise ValueError(f"max_steps must be positive, got {self.max_steps}")
-        if self.num_iwae_samples <= 0:
-            raise ValueError(f"num_iwae_samples must be positive, got {self.num_iwae_samples}")
         if self.batch_size <= 0:
             raise ValueError(f"batch_size must be positive, got {self.batch_size}")
-        # Auto-compute polyak_start_step as halfway through training if not set
         if self.polyak_start_step is None:
             self.polyak_start_step = self.max_steps // 2
         if self.polyak_start_step >= self.max_steps:
-            raise ValueError(f"polyak_start_step must be < max_steps")
+            raise ValueError("polyak_start_step must be < max_steps")
         if not 0.0 < self.polyak_alpha < 1.0:
             raise ValueError(f"polyak_alpha must be in (0, 1), got {self.polyak_alpha}")
-        if not 0.0 < self.prior_lr_scale <= 1.0:
-            raise ValueError(f"prior_lr_scale must be in (0, 1], got {self.prior_lr_scale}")
         if self.free_bits_lambda < 0.0:
             raise ValueError(f"free_bits_lambda must be >= 0, got {self.free_bits_lambda}")
-        if self.alpha_warmup_steps < 0:
-            raise ValueError(f"alpha_warmup_steps must be >= 0, got {self.alpha_warmup_steps}")
-        if self.alpha_anneal_steps < 0:
-            raise ValueError(f"alpha_anneal_steps must be >= 0, got {self.alpha_anneal_steps}")
 
 
-def get_default_config(d_ts: int, d_static: int) -> tuple[ModelConfig, PriorConfig, EncoderConfig]:
+def get_default_config(d_ts: int, d_static: int) -> tuple:
     """Get default configuration with specified feature dimensions.
-    
-    Args:
-        d_ts: Dimension of time-series features per timestep
-        d_static: Dimension of static features
-        
+
     Returns:
-        Tuple of (ModelConfig, PriorConfig, EncoderConfig) with paper defaults
+        Tuple of (ModelConfig, EncoderConfig)
     """
     model_config = ModelConfig(d_ts=d_ts, d_static=d_static)
-    prior_config = PriorConfig()
-    encoder_config = EncoderConfig()
-    return model_config, prior_config, encoder_config
+    return model_config, model_config.encoder_config
 
 
 __all__ = [
     "ModelConfig",
-    "PriorConfig", 
     "EncoderConfig",
     "TrainingConfig",
     "get_default_config",

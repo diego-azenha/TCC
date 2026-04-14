@@ -1,3 +1,0 @@
-Model,NLL_joint,NLL_ind,CovMSE,VaR_q01_err,VaR_q05_err,VaR_q10_err,Sharpe,Ann.Ret,MaxDrawdown
-NeuralFactors,-495.4418,-1.3712,0.000000,0.0100,0.0499,0.0997,0.08,1.27%,-26.89%
-PPCA,219.2877,0.7467,0.000000,0.0020,0.0173,0.0404,0.55,5.69%,-13.13%
