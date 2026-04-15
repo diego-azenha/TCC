@@ -100,6 +100,10 @@ class TrainingConfig:
     # Posterior collapse prevention
     free_bits_lambda: float = 0.1   # Nats/factor; 0 disables
 
+    # Detached sigma loss (prevents alpha shortcut / sigma collapse)
+    lambda_sigma: float = 1.0      # Weight on L_sigma calibration loss
+    sigma_ref_ema: float = 0.99    # EMA momentum for sigma_ref buffer
+
     # Paths
     checkpoint_dir: str = "checkpoints"
     log_dir: str = "logs"
@@ -129,6 +133,10 @@ class TrainingConfig:
             raise ValueError(f"polyak_alpha must be in (0, 1), got {self.polyak_alpha}")
         if self.free_bits_lambda < 0.0:
             raise ValueError(f"free_bits_lambda must be >= 0, got {self.free_bits_lambda}")
+        if self.lambda_sigma < 0.0:
+            raise ValueError(f"lambda_sigma must be >= 0, got {self.lambda_sigma}")
+        if not 0.0 < self.sigma_ref_ema < 1.0:
+            raise ValueError(f"sigma_ref_ema must be in (0, 1), got {self.sigma_ref_ema}")
 
 
 def get_default_config(d_ts: int, d_static: int) -> tuple:

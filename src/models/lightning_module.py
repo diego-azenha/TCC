@@ -28,7 +28,10 @@ class NeuralFactorsLightning(pl.LightningModule):
         self.model_config = model_config
         self.training_config = training_config
 
-        self.model = NeuralFactors(config=model_config)
+        self.model = NeuralFactors(
+            config=model_config,
+            sigma_ref_ema=getattr(training_config, 'sigma_ref_ema', 0.99),
+        )
 
         self.use_polyak = training_config.use_polyak
         if self.use_polyak:
@@ -59,11 +62,14 @@ class NeuralFactorsLightning(pl.LightningModule):
             r=r,
             mask=mask,
             free_bits_lambda=self.training_config.free_bits_lambda,
+            lambda_sigma=getattr(self.training_config, 'lambda_sigma', 1.0),
         )
 
         loss = output['loss']
 
         self.log('train/loss', loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log('train/L_recon', output['L_recon'], on_step=True, on_epoch=True)
+        self.log('train/L_sigma', output['L_sigma'], on_step=True, on_epoch=True)
         self.log('train/log_likelihood', output['log_likelihood'], on_step=True, on_epoch=True)
         self.log('train/kl_divergence', output['kl_divergence'], on_step=True, on_epoch=True)
 
@@ -88,8 +94,16 @@ class NeuralFactorsLightning(pl.LightningModule):
             self.log('train/alpha_mean', alpha.mean(), on_step=True, on_epoch=False)
             self.log('train/alpha_std', alpha.std(), on_step=True, on_epoch=False)
             self.log('train/sigma_mean', sigma.mean(), on_step=True, on_epoch=False)
+            self.log('train/sigma_ref', output['sigma_ref'].item(), on_step=True, on_epoch=False)
             self.log('train/kl_min_factor', output['kl_per_factor'].min(), on_step=True, on_epoch=False)
             self.log('train/kl_max_factor', output['kl_per_factor'].max(), on_step=True, on_epoch=False)
+            # Per-factor KL — 16 individual scalars for Image 1 panel 3
+            kl_pf = output['kl_per_factor']  # [F]
+            for f in range(kl_pf.shape[0]):
+                self.log(f'train/kl_factor_{f}', kl_pf[f], on_step=True, on_epoch=False)
+            # Beta-norm mean — for Image 1 panel 4 variance competition
+            B_log = output['B']  # [batch, N, F]
+            self.log('train/beta_norm_mean', B_log.norm(dim=-1).mean(), on_step=True, on_epoch=False)
 
         return loss
 

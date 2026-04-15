@@ -7,6 +7,7 @@ from .test.covariance import compute_covariance_metrics, save_cov_results, plot_
 from .test.portfolio import (
     compute_portfolio_metrics,
     plot_cumulative_returns,
+    plot_portfolio_diagnostics,
     optimize_portfolio,
     compute_max_drawdown,
     load_ibovespa_returns,
@@ -27,6 +28,7 @@ __all__ = [
     "plot_cov_metrics",
     "compute_portfolio_metrics",
     "plot_cumulative_returns",
+    "plot_portfolio_diagnostics",
     "optimize_portfolio",
     "compute_max_drawdown",
     "load_ibovespa_returns",

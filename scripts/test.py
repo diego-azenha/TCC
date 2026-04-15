@@ -44,16 +44,17 @@ from src.analysis import (
     plot_nll_timeseries,
     compute_var_metrics,
     save_var_results,
-    plot_var_calibration,
     compute_covariance_metrics,
     save_cov_results,
     plot_cov_metrics,
     compute_portfolio_metrics,
-    plot_cumulative_returns,
+    plot_portfolio_diagnostics,
     generate_summary_report,
 )
-from src.analysis.test.factor_clustermap import plot_factor_clustermap
-from src.analysis.test.factor_tsne import plot_factor_tsne
+from src.analysis.test.variance_decomp import plot_variance_decomposition
+from src.analysis.test.factor_utilization import plot_factor_utilization
+from src.analysis.test.pit import compute_and_plot_pit
+from src.analysis.test.factor_structure import plot_factor_structure
 
 
 def parse_args():
@@ -126,12 +127,16 @@ def main():
             plot_cov_metrics(cov_df, output_dir)
         print(f"  Time elapsed: {time.time() - t:.1f}s")
 
-        # 4. VaR
+        # 4. VaR — save CSV (statistical tests); PIT histogram is the visual
         t = time.time()
         var_df = compute_var_metrics(model, dataloader, dataset, num_samples_var, args.mode, returns_std, device)
         if not var_df.empty:
             save_var_results(var_df, output_dir)
-            plot_var_calibration(var_df, output_dir)
+        print(f"  Time elapsed: {time.time() - t:.1f}s")
+
+        # 4b. PIT histogram (replaces/supplements VaR scatter)
+        t = time.time()
+        compute_and_plot_pit(model, dataloader, dataset, output_dir / 'plots', args.mode, device)
         print(f"  Time elapsed: {time.time() - t:.1f}s")
 
         # 5. Portfolio backtest
@@ -140,13 +145,32 @@ def main():
             model, dataset, returns_std, args.mode, device, output_dir
         )
         if not returns_df.empty:
-            plot_cumulative_returns(returns_df, output_dir, Path(args.data_dir))
+            plot_portfolio_diagnostics(returns_df, output_dir, Path(args.data_dir))
         print(f"  Time elapsed: {time.time() - t:.1f}s")
 
-        # 6. Factor visualisations (clustermap + t-SNE)
+        # 6. Factor structure (t-SNE left + predicted vs empirical correlation right)
         t = time.time()
-        plot_factor_clustermap(model, dataset, output_dir / 'plots', data_dir=args.data_dir)
-        plot_factor_tsne(model, dataset, output_dir / 'plots', data_dir=args.data_dir)
+        plot_factor_structure(model, dataset, output_dir / 'plots', data_dir=args.data_dir)
+        print(f"  Time elapsed: {time.time() - t:.1f}s")
+
+        # 6b. Variance decomposition + factor utilization (snapshot diagnostics)
+        t = time.time()
+        import json as _json
+        _cfg_path = Path(args.checkpoint).parent / 'config.json'
+        if not _cfg_path.exists():
+            _cfg_path = Path(args.checkpoint).parent.parent / 'config.json'
+        _fbl = 0.1
+        if _cfg_path.exists():
+            with open(_cfg_path) as _jf:
+                _fbl = _json.load(_jf).get('training', {}).get('free_bits_lambda', 0.1)
+        plot_variance_decomposition(
+            model, dataset, output_dir / 'plots',
+            data_dir=args.data_dir, returns_std=returns_std,
+        )
+        plot_factor_utilization(
+            model, dataset, output_dir / 'plots',
+            free_bits_lambda=_fbl,
+        )
         print(f"  Time elapsed: {time.time() - t:.1f}s")
 
         # 7. Summary report

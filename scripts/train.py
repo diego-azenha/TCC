@@ -74,6 +74,8 @@ def parse_args():
     parser.add_argument("--polyak_start_step", type=int, default=None, help="Polyak averaging start (default: max_steps // 2)")
     parser.add_argument("--polyak_alpha", type=float, default=0.999, help="Polyak EMA decay")
     parser.add_argument("--free_bits_lambda", type=float, default=0.1, help="Min KL floor per factor in nats; 0 = disabled")
+    parser.add_argument("--lambda_sigma", type=float, default=1.0, help="Weight on L_sigma calibration loss (detached sigma)")
+    parser.add_argument("--sigma_ref_ema", type=float, default=0.99, help="EMA momentum for sigma_ref buffer")
     
     # Data split dates (adjusted for IBX data 2005-2025)
     parser.add_argument("--train_end", type=str, default="2018-12-31", help="Training end date")
@@ -160,6 +162,8 @@ def main():
         polyak_start_step=args.polyak_start_step,
         polyak_alpha=args.polyak_alpha,
         free_bits_lambda=args.free_bits_lambda,
+        lambda_sigma=args.lambda_sigma,
+        sigma_ref_ema=args.sigma_ref_ema,
         checkpoint_dir=str(checkpoint_dir),
         log_dir=args.log_dir,
         seed=args.seed,

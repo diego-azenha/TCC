@@ -26,11 +26,12 @@ class NeuralFactors(nn.Module):
     Inference: predict(S, S_static)
     """
 
-    def __init__(self, config: Optional[ModelConfig] = None):
+    def __init__(self, config: Optional[ModelConfig] = None, sigma_ref_ema: float = 0.99):
         super().__init__()
         if config is None:
             config = ModelConfig()
         self.config = config
+        self.sigma_ref_ema = sigma_ref_ema
 
         self.embedder = StockEmbedder(config=config)
         self.encoder = DeepSetEncoder(
@@ -38,6 +39,9 @@ class NeuralFactors(nn.Module):
             phi_hidden=config.encoder_config.phi_hidden,
             rho_hidden=config.encoder_config.rho_hidden,
         )
+
+        # sigma_ref: scalar EMA of residual RMS, used as fixed scale in L_recon
+        self.register_buffer('sigma_ref', torch.ones(1))
 
     # ── Encode ────────────────────────────────────────────────────────────────
 
@@ -95,11 +99,19 @@ class NeuralFactors(nn.Module):
         r: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
         free_bits_lambda: float = 0.0,
+        lambda_sigma: float = 1.0,
     ) -> Dict[str, torch.Tensor]:
-        """Compute ELBO loss for one trading day.
+        """Compute decomposed loss with detached sigma gradient.
 
-        ELBO = E_q[log p(r|z)] - KL(q(z|r) || N(0,I))
-        With optional free-bits floor: penalty = Σ_f max(0, λ - KL_f)
+        Prevents sigma collapse (alpha shortcut) by separating the loss into:
+          L_recon: reconstruction quality using fixed sigma_ref (no sigma gradient)
+          L_sigma: Gaussian NLL calibration loss with detached residuals (sigma gradient only)
+          KL:      standard closed-form KL(q || N(0,I))
+
+        loss = -L_recon + KL + lambda_sigma * L_sigma + free_bits_penalty
+
+        Reference: Lucas et al. 2019 "Don't Blame the ELBO" — fixed decoder
+        variance recovers PPCA solution for factors.
 
         Args:
             S:                [batch, N, L, d_ts]
@@ -107,10 +119,12 @@ class NeuralFactors(nn.Module):
             r:                [batch, N]
             mask:             [batch, N] bool
             free_bits_lambda: λ (nats/factor); 0 disables the floor
+            lambda_sigma:     weight on L_sigma calibration loss
 
         Returns dict with:
-            loss, log_likelihood, kl_divergence, kl_per_factor,
-            free_bits_penalty, alpha, sigma
+            loss, L_recon, L_sigma, log_likelihood, kl_divergence,
+            kl_per_factor, free_bits_penalty, alpha, B, sigma,
+            mu_q, log_sigma_q, sigma_ref
         """
         alpha, B, sigma, mu_q, log_sigma_q = self.encode(S, S_static, r, mask)
 
@@ -118,23 +132,33 @@ class NeuralFactors(nn.Module):
 
         # ── Sample z (K=1, reparameterization) ───────────────────────────────
         z = self.encoder.sample(mu_q, log_sigma_q)  # [batch, 1, F]
+        z_flat = z.squeeze(1)                        # [batch, F]
 
-        # ── Reconstruction log p(r|z) ────────────────────────────────────────
-        r_exp = r.unsqueeze(1).expand(-1, 1, -1)        # [batch, 1, N]
-        mask_exp = mask.unsqueeze(1).expand(-1, 1, -1) if mask is not None else None
+        # ── Reconstruction: loc = alpha + B'z ────────────────────────────────
+        loc = alpha + torch.einsum('bnf,bf->bn', B, z_flat)  # [batch, N]
+        residual = r - loc                                     # [batch, N]
 
-        log_p_r_z = dec.log_pdf_r_given_z(
-            alpha=alpha.unsqueeze(1).expand(-1, 1, -1),  # [batch, 1, N]
-            B=B.unsqueeze(1).expand(-1, 1, -1, -1),      # [batch, 1, N, F]
-            sigma=sigma.unsqueeze(1).expand(-1, 1, -1),  # [batch, 1, N]
-            z=z,                                          # [batch, 1, F]
-            r=r_exp,
-            mask=mask_exp,
-        )  # [batch, 1]
-        log_p_r_z = log_p_r_z.squeeze(1)  # [batch]
+        # ── Masking ──────────────────────────────────────────────────────────
+        if mask is None:
+            mask = torch.ones(batch, N, dtype=torch.bool, device=r.device)
+        mask_f = mask.float()                                  # [batch, N]
+        n_valid = mask_f.sum().clamp(min=1.0)
+
+        # ── L_recon: uses sigma_ref (buffer, no gradient) ────────────────────
+        # -0.5 * Σ_i (residual_i² / sigma_ref²) / N_valid
+        # No log(sigma) term → no perverse incentive for sigma to collapse.
+        # sigma_ref scales the loss so gradient magnitudes stay stable.
+        sigma_ref = self.sigma_ref.detach()  # [1], no gradient
+        L_recon = -0.5 * ((residual ** 2 / sigma_ref ** 2) * mask_f).sum() / n_valid
+
+        # ── L_sigma: Gaussian NLL with detached residuals ────────────────────
+        # 0.5 * Σ_i (2*log(sigma_i) + residual_sg_i² / sigma_i²) / N_valid
+        # Optimal sigma_i = RMS(residual_i). Only sigma_head receives gradient.
+        residual_sg = residual.detach()       # stop gradient to alpha/B/encoder
+        sigma_safe = sigma.clamp(min=1e-6)
+        L_sigma = 0.5 * ((2.0 * torch.log(sigma_safe) + residual_sg ** 2 / sigma_safe ** 2) * mask_f).sum() / n_valid
 
         # ── KL(q || N(0,I)) — exact closed form ──────────────────────────────
-        # KL = 0.5 * Σ_f (σ²_f + μ²_f - 1 - log σ²_f)
         sigma_q = torch.exp(log_sigma_q)  # [batch, F]
         kl_per_factor = 0.5 * (
             sigma_q ** 2 + mu_q ** 2 - 1.0 - 2.0 * log_sigma_q
@@ -148,25 +172,35 @@ class NeuralFactors(nn.Module):
                 free_bits_lambda - kl_per_factor, min=0.0
             ).sum(dim=-1).mean()
 
-        # ── ELBO loss (minimised → negate ELBO) ──────────────────────────────
-        elbo = log_p_r_z - kl  # [batch]
-        loss = -elbo.mean() + free_bits_penalty
+        # ── Total loss ────────────────────────────────────────────────────────
+        loss = -L_recon + kl.mean() + lambda_sigma * L_sigma + free_bits_penalty
+
+        # ── Update sigma_ref (EMA of batch residual RMS, no gradient) ────────
+        if self.training:
+            with torch.no_grad():
+                batch_rms = torch.sqrt((residual.detach() ** 2 * mask_f).sum() / n_valid)
+                self.sigma_ref.mul_(self.sigma_ref_ema).add_(
+                    batch_rms, alpha=(1.0 - self.sigma_ref_ema)
+                )
 
         with torch.no_grad():
-            log_likelihood = log_p_r_z.mean()
             kl_divergence = kl.mean()
             kl_pf = kl_per_factor.mean(dim=0)  # [F]
 
         return {
             'loss': loss,
-            'log_likelihood': log_likelihood,
+            'L_recon': L_recon.detach(),
+            'L_sigma': L_sigma.detach(),
+            'log_likelihood': L_recon.detach(),  # backward-compat alias
             'kl_divergence': kl_divergence,
             'kl_per_factor': kl_pf,
             'free_bits_penalty': free_bits_penalty.detach(),
             'alpha': alpha.detach(),
+            'B': B.detach(),
             'sigma': sigma.detach(),
             'mu_q': mu_q.detach(),
             'log_sigma_q': log_sigma_q.detach(),
+            'sigma_ref': self.sigma_ref.detach().clone(),
         }
 
     # ── Inference ─────────────────────────────────────────────────────────────

@@ -21,10 +21,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
 import torch
-from scipy.cluster.hierarchy import dendrogram, linkage
-from sklearn.decomposition import PCA
 import sys
 sys.path.append(str(Path(__file__).parent.parent.parent))  # project root
 
@@ -126,36 +123,85 @@ def plot_loss_curves(log_dir, output_dir):
             axes[0, 1].legend()
             axes[0, 1].grid(True, alpha=0.3)
         
-        # 3. KL per-factor min (should stay > free_bits threshold)
-        kl_min_tag = 'train/kl_min_factor'
-        if kl_min_tag in scalar_tags:
-            kl_min = ea.Scalars(kl_min_tag)
-            steps = [e.step for e in kl_min]
-            values = [e.value for e in kl_min]
-            axes[1, 0].plot(steps, values, color='purple')
+        # 3. Per-factor KL (16 individual lines) — shows which factors are alive
+        # Try per-factor tags first; fall back to min/max band for old logs
+        per_factor_tags = sorted(
+            [t for t in scalar_tags if t.startswith('train/kl_factor_')],
+            key=lambda t: int(t.split('_')[-1]),
+        )
+        if per_factor_tags:
+            cmap_kl = plt.get_cmap('tab20')
+            for i, tag in enumerate(per_factor_tags):
+                factor_data = ea.Scalars(tag)
+                f_steps = [e.step for e in factor_data]
+                f_vals = [e.value for e in factor_data]
+                axes[1, 0].plot(
+                    f_steps, f_vals,
+                    color=cmap_kl(i % 20), linewidth=0.9, alpha=0.75,
+                    label=f'f{i}' if i < 8 else None,
+                )
+            # Free-bits threshold line
+            _free_bits = 0.1  # default; try to read from config
+            try:
+                _cfg_path = Path(log_dir).parent / "checkpoints" / Path(log_dir).name / "config.json"
+                if not _cfg_path.exists():
+                    _cfg_path = Path(log_dir).parent / "config.json"
+                if _cfg_path.exists():
+                    import json as _json
+                    with open(_cfg_path) as _jf:
+                        _jcfg = _json.load(_jf)
+                    _free_bits = _jcfg.get("training", {}).get("free_bits_lambda", 0.1)
+            except Exception:
+                pass
+            axes[1, 0].axhline(y=_free_bits, color='red', linestyle='--', linewidth=1.2,
+                               label=f'free_bits λ={_free_bits}')
             axes[1, 0].set_xlabel('Step')
-            axes[1, 0].set_ylabel('KL_min factor')
-            axes[1, 0].set_title('Min per-factor KL divergence')
+            axes[1, 0].set_ylabel('KL per factor')
+            axes[1, 0].set_title('Per-factor KL divergence\n(red=free-bits floor; dead factors hug floor)')
+            axes[1, 0].legend(fontsize=7, ncol=2, loc='upper left')
             axes[1, 0].grid(True, alpha=0.3)
-        
-        # 4. Decoder parameters (alpha, sigma)
-        if 'train/alpha_mean' in scalar_tags and 'train/sigma_mean' in scalar_tags:
-            alpha = ea.Scalars('train/alpha_mean')
-            sigma = ea.Scalars('train/sigma_mean')
-            steps_alpha = [e.step for e in alpha]
-            values_alpha = [e.value for e in alpha]
-            steps_sigma = [e.step for e in sigma]
-            values_sigma = [e.value for e in sigma]
-            
-            ax_twin = axes[1, 1].twinx()
-            axes[1, 1].plot(steps_alpha, values_alpha, color='orange', label='Alpha (location)')
-            ax_twin.plot(steps_sigma, values_sigma, color='brown', label='Sigma (scale)')
+        elif 'train/kl_min_factor' in scalar_tags:
+            # Fallback: shade min/max band
+            kl_min = ea.Scalars('train/kl_min_factor')
+            steps_kl = [e.step for e in kl_min]
+            vals_min = [e.value for e in kl_min]
+            axes[1, 0].plot(steps_kl, vals_min, color='purple', linewidth=1.5, label='KL min factor')
+            if 'train/kl_max_factor' in scalar_tags:
+                kl_max = ea.Scalars('train/kl_max_factor')
+                vals_max = [e.value for e in kl_max]
+                axes[1, 0].fill_between(steps_kl, vals_min, vals_max, alpha=0.15, color='purple',
+                                        label='min-max band')
+            axes[1, 0].set_xlabel('Step')
+            axes[1, 0].set_ylabel('KL factor')
+            axes[1, 0].set_title('Per-factor KL (min/max band — re-train for individual lines)')
+            axes[1, 0].legend()
+            axes[1, 0].grid(True, alpha=0.3)
+
+        # 4. Variance competition: alpha_std, mean(sigma), mean(||beta_i||)
+        # Shows which channel dominates: alpha shortcut, noise floor, or true factors
+        _comp_series = {}
+        for tag, label, color in [
+            ('train/alpha_std',      'alpha_std',     'orange'),
+            ('train/sigma_mean',     'mean(sigma)',    'steelblue'),
+            ('train/beta_norm_mean', 'mean(||β_i||)', 'green'),
+        ]:
+            if tag in scalar_tags:
+                evts = ea.Scalars(tag)
+                _comp_series[label] = {
+                    'steps': [e.step for e in evts],
+                    'vals':  [e.value for e in evts],
+                    'color': color,
+                }
+        if _comp_series:
+            for label, d in _comp_series.items():
+                axes[1, 1].plot(d['steps'], d['vals'], color=d['color'],
+                                linewidth=1.5, label=label, alpha=0.85)
             axes[1, 1].set_xlabel('Step')
-            axes[1, 1].set_ylabel('Alpha', color='orange')
-            ax_twin.set_ylabel('Sigma', color='brown')
-            axes[1, 1].set_title('Decoder Parameters')
-            axes[1, 1].legend(loc='upper left')
-            ax_twin.legend(loc='upper right')
+            axes[1, 1].set_ylabel('Value')
+            missing = {'train/beta_norm_mean'} - set(scalar_tags)
+            note = ' (beta_norm absent: re-train)' if missing else ''
+            axes[1, 1].set_title(f'Variance competition{note}\n(alpha_std↑ + sigma/β low → alpha shortcut)')
+            axes[1, 1].legend(fontsize=9)
             axes[1, 1].grid(True, alpha=0.3)
         
         plt.tight_layout()
@@ -209,54 +255,7 @@ def analyze_factor_exposures(model, dataloader, output_dir, num_batches=50):
     
     F = all_beta.shape[1]
 
-    # 1. Hierarchical clustering of factors
-    plt.figure(figsize=(12, 6))
-    linkage_matrix = linkage(all_beta.T, method='ward')
-    dendrogram(linkage_matrix)
-    plt.xlabel('Factor Index')
-    plt.ylabel('Distance')
-    plt.title('Hierarchical Clustering of Factors')
-    plt.tight_layout()
-    plt.savefig(output_dir / 'factor_clustering.png', dpi=300)
-    plt.close()
-    
-    # 3. Distribution of alpha, sigma
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-
-    def _clipped_hist(ax, data, xlabel, title):
-        lo, hi = np.percentile(data, 1), np.percentile(data, 99)
-        clipped = data[(data >= lo) & (data <= hi)]
-        pct_shown = 100 * len(clipped) / max(len(data), 1)
-        data_range = hi - lo
-        # Near-constant data: bins='auto' produces invisibly thin bars.
-        # Use 50 fixed bins and annotate with mean ± std instead.
-        near_constant = data_range < 1e-3 * max(abs(lo + hi) / 2, 1e-9)
-        bins = 50 if near_constant else 'auto'
-        try:
-            ax.hist(clipped, bins=bins, alpha=0.7, edgecolor='black')
-            if lo < hi:
-                ax.set_xlim(lo - data_range * 0.1, hi + data_range * 0.1)
-            if near_constant:
-                ax.annotate(
-                    f"Near-constant: mean={np.mean(data):.5f}, std={np.std(data):.2e}",
-                    xy=(0.5, 0.97), xycoords='axes fraction',
-                    ha='center', va='top', fontsize=8, color='red',
-                )
-        except ValueError:
-            ax.text(0.5, 0.5, f'All values = {np.mean(data):.4f}',
-                    ha='center', va='center', transform=ax.transAxes)
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel('Frequency')
-        ax.set_title(f'{title}\n(1st-99th pct, {pct_shown:.0f}% of data)')
-
-    _clipped_hist(axes[0], all_alpha, 'Alpha (Idiosyncratic Return)', 'Distribution of Alpha')
-    _clipped_hist(axes[1], all_sigma, 'Sigma (Scale)', 'Distribution of Sigma')
-
-    plt.tight_layout()
-    plt.savefig(output_dir / 'decoder_param_distributions.png', dpi=300)
-    plt.close()
-    
-    print(f"Factor analysis plots saved to {output_dir}")
+    print(f"Factor analysis complete (no training-time plots — use test.py for diagnostics)")
     
     # Print summary statistics
     print("\n" + "="*60)

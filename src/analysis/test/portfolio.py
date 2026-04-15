@@ -204,7 +204,11 @@ def compute_portfolio_metrics(model, dataset, returns_std, mode, device, output_
                     turnover_series.append(turnover)
                 prev_weights_by_ticker = new_w_dict
 
-    returns_df = pd.DataFrame({'date': dates, 'return': portfolio_returns})
+    returns_df = pd.DataFrame({
+        'date': dates,
+        'return': portfolio_returns,
+        'eff_n': eff_n_series,
+    })
 
     print(f"\n✓ Backtest Complete")
     print(f"  Periods: {len(returns_df)}")
@@ -343,3 +347,115 @@ def plot_cumulative_returns(returns_df, output_dir, data_dir):
     fig.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close(fig)
     print(f"✓ Cumulative returns plot saved to: {output_path}")
+
+
+def plot_portfolio_diagnostics(returns_df, output_dir, data_dir):
+    """Three-panel portfolio diagnostic figure.
+
+    Panel 1: Cumulative returns (NeuralFactors vs Ibovespa).
+    Panel 2: Rolling 60-day annualised Sharpe ratio.
+    Panel 3: Effective number of stocks (1/HHI) over time.
+
+    Args:
+        returns_df: DataFrame with columns [date, return, eff_n].
+        output_dir: Base Path for results (plots/ subdir is used).
+        data_dir: Root data directory (for Ibovespa lookup).
+    """
+    output_dir = Path(output_dir)
+    plot_dir = output_dir / "plots"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+
+    arr     = returns_df['return'].values
+    dates   = returns_df['date']
+    eff_n   = returns_df['eff_n'].values if 'eff_n' in returns_df.columns else None
+
+    # Rolling Sharpe — auto-reduce window if period is short
+    n_obs = len(arr)
+    roll_window = min(60, max(10, n_obs // 3))
+    s_ret = pd.Series(arr, index=dates)
+    roll_mean = s_ret.rolling(roll_window).mean()
+    roll_std  = s_ret.rolling(roll_window).std()
+    roll_ann  = np.sqrt(252)
+    rolling_sharpe = (roll_mean * 252) / (roll_std * roll_ann)
+    rolling_sharpe = rolling_sharpe.where(s_ret.rolling(roll_window).count() >= roll_window)
+
+    # ── Figure ────────────────────────────────────────────────────────────────
+    fig, axes = plt.subplots(3, 1, figsize=(14, 14), sharex=True)
+    fig.suptitle('Portfolio Diagnostics', fontsize=16, fontweight='bold')
+
+    # ── Panel 1: Cumulative returns ───────────────────────────────────────────
+    ax1 = axes[0]
+    cum = (1 + arr).cumprod()
+    ax1.plot(dates, cum, label='NeuralFactors Min-Variance',
+             linewidth=1.8, color='#1f77b4')
+
+    benchmark_df = load_ibovespa_returns(data_dir, dates.min(), dates.max())
+    if benchmark_df is not None:
+        merged = returns_df[['date']].merge(benchmark_df, on='date', how='left')
+        merged['return'] = merged['return'].fillna(0)
+        bench_cum = (1 + merged['return']).cumprod()
+        ax1.plot(dates, bench_cum, label='Ibovespa',
+                 linewidth=1.8, linestyle='--', color='grey')
+
+    ax1.axhline(1.0, color='black', linewidth=0.8, linestyle=':')
+    ax1.set_ylabel('Cumulative Return (base 1)', fontsize=11)
+    ax1.set_title('Cumulative Returns', fontsize=12)
+    ax1.legend(loc='upper left', fontsize=10, framealpha=0.9)
+    ax1.grid(True, alpha=0.3)
+
+    # ── Panel 2: Rolling Sharpe ───────────────────────────────────────────────
+    ax2 = axes[1]
+    ax2.plot(rolling_sharpe.index, rolling_sharpe.values,
+             color='#2ca02c', linewidth=1.5,
+             label=f'Rolling {roll_window}-day Ann. Sharpe')
+    ax2.axhline(0.0, color='red', linestyle='--', linewidth=1.0, alpha=0.7)
+    ax2.fill_between(
+        rolling_sharpe.index,
+        rolling_sharpe.values,
+        0,
+        where=rolling_sharpe.values > 0,
+        alpha=0.15, color='#2ca02c',
+        interpolate=True,
+    )
+    ax2.fill_between(
+        rolling_sharpe.index,
+        rolling_sharpe.values,
+        0,
+        where=rolling_sharpe.values < 0,
+        alpha=0.15, color='#d62728',
+        interpolate=True,
+    )
+    ax2.set_ylabel('Ann. Sharpe Ratio', fontsize=11)
+    ax2.set_title(f'Rolling {roll_window}-day Annualised Sharpe', fontsize=12)
+    ax2.legend(fontsize=10)
+    ax2.grid(True, alpha=0.3)
+
+    # ── Panel 3: Effective N ──────────────────────────────────────────────────
+    ax3 = axes[2]
+    if eff_n is not None:
+        ax3.plot(dates, eff_n, color='#9467bd', linewidth=1.5,
+                 label='Effective N  (1/HHI)')
+        # "Concentrated signal" reference: N/4 where N ≈ median effective N
+        n_ref = float(np.nanmedian(eff_n)) / 2.0 if np.any(~np.isnan(eff_n)) else None
+        if n_ref is not None:
+            ax3.axhline(n_ref, color='darkorange', linestyle='--', linewidth=1.2,
+                        label=f'Median/2 reference ({n_ref:.0f})')
+    else:
+        ax3.text(0.5, 0.5, 'eff_n not available', transform=ax3.transAxes,
+                 ha='center', va='center', fontsize=12)
+
+    ax3.set_ylabel('Effective number of stocks', fontsize=11)
+    ax3.set_title(
+        'Portfolio Concentration — 1/HHI\n'
+        '(Low = concentrated; equal-weight at N stocks → N)',
+        fontsize=12,
+    )
+    ax3.legend(fontsize=10)
+    ax3.set_xlabel('Date', fontsize=11)
+    ax3.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    out_path = plot_dir / "portfolio_diagnostics.png"
+    fig.savefig(out_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    print(f"✓ Portfolio diagnostics saved to: {out_path}")
