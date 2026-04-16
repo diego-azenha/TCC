@@ -100,6 +100,7 @@ class NeuralFactors(nn.Module):
         mask: Optional[torch.Tensor] = None,
         free_bits_lambda: float = 0.0,
         lambda_sigma: float = 1.0,
+        freeze_alpha: bool = False,
     ) -> Dict[str, torch.Tensor]:
         """Compute decomposed loss with detached sigma gradient.
 
@@ -109,6 +110,9 @@ class NeuralFactors(nn.Module):
           KL:      standard closed-form KL(q || N(0,I))
 
         loss = -L_recon + KL + lambda_sigma * L_sigma + free_bits_penalty
+
+        When freeze_alpha=True, alpha is detached from the loss so no gradient
+        flows through it — forcing B and the encoder to explain returns first.
 
         Reference: Lucas et al. 2019 "Don't Blame the ELBO" — fixed decoder
         variance recovers PPCA solution for factors.
@@ -120,6 +124,7 @@ class NeuralFactors(nn.Module):
             mask:             [batch, N] bool
             free_bits_lambda: λ (nats/factor); 0 disables the floor
             lambda_sigma:     weight on L_sigma calibration loss
+            freeze_alpha:     if True, detach alpha from loss (alpha_head gets no gradient)
 
         Returns dict with:
             loss, L_recon, L_sigma, log_likelihood, kl_divergence,
@@ -135,8 +140,11 @@ class NeuralFactors(nn.Module):
         z_flat = z.squeeze(1)                        # [batch, F]
 
         # ── Reconstruction: loc = alpha + B'z ────────────────────────────────
-        loc = alpha + torch.einsum('bnf,bf->bn', B, z_flat)  # [batch, N]
-        residual = r - loc                                     # [batch, N]
+        # During alpha freeze: detach alpha so no gradient flows through it.
+        # B and the encoder must explain returns; alpha_head gets no signal.
+        alpha_for_loss = alpha.detach() if freeze_alpha else alpha
+        loc = alpha_for_loss + torch.einsum('bnf,bf->bn', B, z_flat)  # [batch, N]
+        residual = r - loc                                              # [batch, N]
 
         # ── Masking ──────────────────────────────────────────────────────────
         if mask is None:

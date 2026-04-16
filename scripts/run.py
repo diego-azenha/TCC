@@ -78,6 +78,12 @@ def parse_args():
     train.add_argument("--polyak_alpha", type=float, default=0.999)
     train.add_argument("--free_bits_lambda", type=float, default=0.1,
                        help="Min KL floor per factor in nats; 0 = disabled")
+    train.add_argument("--lambda_sigma", type=float, default=1.0,
+                       help="Weight on L_sigma calibration loss (detached sigma)")
+    train.add_argument("--sigma_ref_ema", type=float, default=0.99,
+                       help="EMA momentum for sigma_ref buffer")
+    train.add_argument("--alpha_freeze_steps", type=int, default=None,
+                       help="Freeze alpha_head for N steps (default: max_steps // 2; 0 = disabled)")
     train.add_argument("--train_end", type=str, default="2018-12-31")
     train.add_argument("--val_end", type=str, default="2022-12-31")
     train.add_argument("--gpus", type=int, default=1)
@@ -144,6 +150,8 @@ def run_training(args, python: str) -> Path:
         "--val_every_n_steps", str(args.val_every_n_steps),
         "--polyak_alpha", str(args.polyak_alpha),
         "--free_bits_lambda", str(args.free_bits_lambda),
+        "--lambda_sigma", str(args.lambda_sigma),
+        "--sigma_ref_ema", str(args.sigma_ref_ema),
         "--sigma_min", str(args.sigma_min),
         "--sigma_max", str(args.sigma_max),
         "--alpha_max", str(args.alpha_max),
@@ -153,6 +161,8 @@ def run_training(args, python: str) -> Path:
     ]
     if args.polyak_start_step is not None:
         cmd += ["--polyak_start_step", str(args.polyak_start_step)]
+    if args.alpha_freeze_steps is not None:
+        cmd += ["--alpha_freeze_steps", str(args.alpha_freeze_steps)]
     if args.fast_dev_run:
         cmd.append("--fast_dev_run")
 

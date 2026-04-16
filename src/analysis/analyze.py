@@ -123,58 +123,27 @@ def plot_loss_curves(log_dir, output_dir):
             axes[0, 1].legend()
             axes[0, 1].grid(True, alpha=0.3)
         
-        # 3. Per-factor KL (16 individual lines) — shows which factors are alive
-        # Try per-factor tags first; fall back to min/max band for old logs
-        per_factor_tags = sorted(
-            [t for t in scalar_tags if t.startswith('train/kl_factor_')],
-            key=lambda t: int(t.split('_')[-1]),
-        )
-        if per_factor_tags:
-            cmap_kl = plt.get_cmap('tab20')
-            for i, tag in enumerate(per_factor_tags):
-                factor_data = ea.Scalars(tag)
-                f_steps = [e.step for e in factor_data]
-                f_vals = [e.value for e in factor_data]
-                axes[1, 0].plot(
-                    f_steps, f_vals,
-                    color=cmap_kl(i % 20), linewidth=0.9, alpha=0.75,
-                    label=f'f{i}' if i < 8 else None,
-                )
-            # Free-bits threshold line
-            _free_bits = 0.1  # default; try to read from config
-            try:
-                _cfg_path = Path(log_dir).parent / "checkpoints" / Path(log_dir).name / "config.json"
-                if not _cfg_path.exists():
-                    _cfg_path = Path(log_dir).parent / "config.json"
-                if _cfg_path.exists():
-                    import json as _json
-                    with open(_cfg_path) as _jf:
-                        _jcfg = _json.load(_jf)
-                    _free_bits = _jcfg.get("training", {}).get("free_bits_lambda", 0.1)
-            except Exception:
-                pass
-            axes[1, 0].axhline(y=_free_bits, color='red', linestyle='--', linewidth=1.2,
-                               label=f'free_bits λ={_free_bits}')
+        # 3. Variance competition ZOOM (first 20k steps) — early-training dynamics
+        _comp_series_zoom = {}
+        for tag, label, color in [
+            ('train/alpha_std',      'alpha_std',     'orange'),
+            ('train/sigma_mean',     'mean(sigma)',    'steelblue'),
+            ('train/beta_norm_mean', 'mean(||β_i||)', 'green'),
+        ]:
+            if tag in scalar_tags:
+                evts = ea.Scalars(tag)
+                s = [e.step for e in evts if e.step <= 20_000]
+                v = [e.value for e in evts if e.step <= 20_000]
+                if s:
+                    _comp_series_zoom[label] = {'steps': s, 'vals': v, 'color': color}
+        if _comp_series_zoom:
+            for label, d in _comp_series_zoom.items():
+                axes[1, 0].plot(d['steps'], d['vals'], color=d['color'],
+                                linewidth=1.5, label=label, alpha=0.85)
             axes[1, 0].set_xlabel('Step')
-            axes[1, 0].set_ylabel('KL per factor')
-            axes[1, 0].set_title('Per-factor KL divergence\n(red=free-bits floor; dead factors hug floor)')
-            axes[1, 0].legend(fontsize=7, ncol=2, loc='upper left')
-            axes[1, 0].grid(True, alpha=0.3)
-        elif 'train/kl_min_factor' in scalar_tags:
-            # Fallback: shade min/max band
-            kl_min = ea.Scalars('train/kl_min_factor')
-            steps_kl = [e.step for e in kl_min]
-            vals_min = [e.value for e in kl_min]
-            axes[1, 0].plot(steps_kl, vals_min, color='purple', linewidth=1.5, label='KL min factor')
-            if 'train/kl_max_factor' in scalar_tags:
-                kl_max = ea.Scalars('train/kl_max_factor')
-                vals_max = [e.value for e in kl_max]
-                axes[1, 0].fill_between(steps_kl, vals_min, vals_max, alpha=0.15, color='purple',
-                                        label='min-max band')
-            axes[1, 0].set_xlabel('Step')
-            axes[1, 0].set_ylabel('KL factor')
-            axes[1, 0].set_title('Per-factor KL (min/max band — re-train for individual lines)')
-            axes[1, 0].legend()
+            axes[1, 0].set_ylabel('Value')
+            axes[1, 0].set_title('Variance competition (first 20k steps)\n(early dynamics: who wins first?)')
+            axes[1, 0].legend(fontsize=9)
             axes[1, 0].grid(True, alpha=0.3)
 
         # 4. Variance competition: alpha_std, mean(sigma), mean(||beta_i||)

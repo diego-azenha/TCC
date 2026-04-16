@@ -39,6 +39,21 @@ class NeuralFactorsLightning(pl.LightningModule):
             self.polyak_alpha = training_config.polyak_alpha
             self.polyak_start_step = training_config.polyak_start_step
 
+        # Alpha freeze: prevent alpha shortcut by freezing alpha_head
+        self.alpha_freeze_steps = getattr(training_config, 'alpha_freeze_steps', 0) or 0
+        self._alpha_frozen = self.alpha_freeze_steps > 0
+
+    # ── Alpha freeze helpers ─────────────────────────────────────────────────
+
+    def _check_alpha_freeze(self):
+        """Unfreeze alpha once alpha_freeze_steps is reached."""
+        if self._alpha_frozen and self.global_step >= self.alpha_freeze_steps:
+            self._alpha_frozen = False
+            print(f"\n[Step {self.global_step}] Alpha head unfrozen")
+
+    def on_train_batch_start(self, batch, batch_idx):
+        self._check_alpha_freeze()
+
     # ── forward ───────────────────────────────────────────────────────────────
 
     def forward(
@@ -63,6 +78,7 @@ class NeuralFactorsLightning(pl.LightningModule):
             mask=mask,
             free_bits_lambda=self.training_config.free_bits_lambda,
             lambda_sigma=getattr(self.training_config, 'lambda_sigma', 1.0),
+            freeze_alpha=self._alpha_frozen,
         )
 
         loss = output['loss']
@@ -93,6 +109,7 @@ class NeuralFactorsLightning(pl.LightningModule):
             sigma = output['sigma']  # [batch, N]
             self.log('train/alpha_mean', alpha.mean(), on_step=True, on_epoch=False)
             self.log('train/alpha_std', alpha.std(), on_step=True, on_epoch=False)
+            self.log('train/alpha_frozen', float(self._alpha_frozen), on_step=True, on_epoch=False)
             self.log('train/sigma_mean', sigma.mean(), on_step=True, on_epoch=False)
             self.log('train/sigma_ref', output['sigma_ref'].item(), on_step=True, on_epoch=False)
             self.log('train/kl_min_factor', output['kl_per_factor'].min(), on_step=True, on_epoch=False)

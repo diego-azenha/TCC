@@ -104,6 +104,9 @@ class TrainingConfig:
     lambda_sigma: float = 1.0      # Weight on L_sigma calibration loss
     sigma_ref_ema: float = 0.99    # EMA momentum for sigma_ref buffer
 
+    # Alpha freeze: freeze alpha_head for first N steps so factors develop first
+    alpha_freeze_steps: int = None  # Auto: max_steps // 2; 0 disables
+
     # Paths
     checkpoint_dir: str = "checkpoints"
     log_dir: str = "logs"
@@ -137,6 +140,10 @@ class TrainingConfig:
             raise ValueError(f"lambda_sigma must be >= 0, got {self.lambda_sigma}")
         if not 0.0 < self.sigma_ref_ema < 1.0:
             raise ValueError(f"sigma_ref_ema must be in (0, 1), got {self.sigma_ref_ema}")
+        if self.alpha_freeze_steps is None:
+            self.alpha_freeze_steps = self.max_steps // 2
+        if self.alpha_freeze_steps < 0:
+            raise ValueError(f"alpha_freeze_steps must be >= 0, got {self.alpha_freeze_steps}")
 
 
 def get_default_config(d_ts: int, d_static: int) -> tuple:

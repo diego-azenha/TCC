@@ -76,6 +76,7 @@ def parse_args():
     parser.add_argument("--free_bits_lambda", type=float, default=0.1, help="Min KL floor per factor in nats; 0 = disabled")
     parser.add_argument("--lambda_sigma", type=float, default=1.0, help="Weight on L_sigma calibration loss (detached sigma)")
     parser.add_argument("--sigma_ref_ema", type=float, default=0.99, help="EMA momentum for sigma_ref buffer")
+    parser.add_argument("--alpha_freeze_steps", type=int, default=None, help="Freeze alpha_head for N steps (default: max_steps // 2; 0 = disabled)")
     
     # Data split dates (adjusted for IBX data 2005-2025)
     parser.add_argument("--train_end", type=str, default="2018-12-31", help="Training end date")
@@ -164,6 +165,7 @@ def main():
         free_bits_lambda=args.free_bits_lambda,
         lambda_sigma=args.lambda_sigma,
         sigma_ref_ema=args.sigma_ref_ema,
+        alpha_freeze_steps=args.alpha_freeze_steps,
         checkpoint_dir=str(checkpoint_dir),
         log_dir=args.log_dir,
         seed=args.seed,
