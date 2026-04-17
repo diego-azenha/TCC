@@ -69,6 +69,8 @@ def parse_args():
                        help="Sigma upper bound via sigmoid (normalised space)")
     train.add_argument("--alpha_max", type=float, default=3.0,
                        help="Alpha clamp bound in normalised space")
+    train.add_argument("--alpha_scale", type=float, default=0.0,
+                       help="If > 0, use alpha_scale * tanh(alpha_head) instead of hard clamp; e.g. 0.1")
     train.add_argument("--learning_rate", type=float, default=1e-4)
     train.add_argument("--weight_decay", type=float, default=1e-6)
     train.add_argument("--max_steps", type=int, default=250_000)
@@ -84,6 +86,8 @@ def parse_args():
                        help="EMA momentum for sigma_ref buffer")
     train.add_argument("--alpha_freeze_steps", type=int, default=None,
                        help="Freeze alpha_head for N steps (default: max_steps // 2; 0 = disabled)")
+    train.add_argument("--kl_warmup_steps", type=int, default=0,
+                       help="KL annealing warm-up: ramp kl_weight 0→1 over N steps (0 = disabled)")
     train.add_argument("--train_end", type=str, default="2018-12-31")
     train.add_argument("--val_end", type=str, default="2022-12-31")
     train.add_argument("--gpus", type=int, default=1)
@@ -155,6 +159,7 @@ def run_training(args, python: str) -> Path:
         "--sigma_min", str(args.sigma_min),
         "--sigma_max", str(args.sigma_max),
         "--alpha_max", str(args.alpha_max),
+        "--alpha_scale", str(args.alpha_scale),
         "--train_end", args.train_end,
         "--val_end", args.val_end,
         "--gpus", str(args.gpus),
@@ -163,6 +168,8 @@ def run_training(args, python: str) -> Path:
         cmd += ["--polyak_start_step", str(args.polyak_start_step)]
     if args.alpha_freeze_steps is not None:
         cmd += ["--alpha_freeze_steps", str(args.alpha_freeze_steps)]
+    if args.kl_warmup_steps > 0:
+        cmd += ["--kl_warmup_steps", str(args.kl_warmup_steps)]
     if args.fast_dev_run:
         cmd.append("--fast_dev_run")
 

@@ -28,6 +28,7 @@ class StockEmbedder(nn.Module):
         sigma_max: float = 3.0,
         alpha_max: float = 3.0,
         lookback: int = 256,  # Paper uses 256 (Table 3, Section 5.1.4)
+        alpha_scale: float = 0.0,  # >0: soft tanh cap on alpha; 0 = legacy hard clamp
         config: Optional[ModelConfig] = None,
     ):
         """Args: d_ts, d_static (required); h=256, F=64, dropout=0.25, lookback=256; config overrides all."""
@@ -47,6 +48,7 @@ class StockEmbedder(nn.Module):
             sigma_max = config.sigma_max
             alpha_max = config.alpha_max
             lookback = config.lookback
+            alpha_scale = getattr(config, 'alpha_scale', 0.0)
         
         # Validate required parameters
         if d_ts is None:
@@ -62,6 +64,7 @@ class StockEmbedder(nn.Module):
         self.sigma_min = sigma_min
         self.sigma_max = sigma_max
         self.alpha_max = alpha_max
+        self.alpha_scale = alpha_scale
         self.lookback = lookback  # Store for validation
 
         # Step 1: per-timestep projection
@@ -88,10 +91,18 @@ class StockEmbedder(nn.Module):
         nn.init.normal_(self.beta_head.weight, mean=0.0, std=0.1)
         nn.init.zeros_(self.beta_head.bias)
         
-        # Initialize sigma_head bias so sigmoid output ≈ 0.993 → sigma ≈ 2.98 at init.
-        # This gives a conservatively wide noise model during Phase 1 (sigma frozen),
-        # which is better for factor development than the default sigmoid(0) ≈ 1.55.
-        nn.init.constant_(self.sigma_head.bias, 5.0)
+        # Initialize sigma_head bias so sigma ≈ 1.0 at init — matching the scale of
+        # normalized returns (std≈1.0 by dataset construction).
+        # bias = logit((1.0 - sigma_min) / (sigma_max - sigma_min))
+        #       = logit((1.0 - 0.1) / (3.0 - 0.1)) = logit(0.310) ≈ -0.80
+        # sigmoid(-0.80) ≈ 0.310  →  sigma = 0.1 + 2.9 * 0.310 ≈ 1.0
+        # Old value was 5.0 (sigma≈3.0), which caused an instantaneous L_sigma overshoot
+        # that crashed sigma to sigma_min in the first ~100 steps.
+        _target_sigma = 1.0
+        import math as _math
+        _p = (_target_sigma - self.sigma_min) / (self.sigma_max - self.sigma_min)
+        _p = max(1e-6, min(1 - 1e-6, _p))
+        nn.init.constant_(self.sigma_head.bias, _math.log(_p / (1 - _p)))
 
     def _act(self, x: torch.Tensor) -> torch.Tensor:
         """Apply activation function."""
@@ -160,12 +171,17 @@ class StockEmbedder(nn.Module):
         H3 = self.dropout(H3)
 
         # Step 5: heads
-        alpha = self.alpha_head(H3).squeeze(-1)  # (N,)
+        if self.alpha_scale > 0.0:
+            # Soft amplitude cap: alpha ∈ (-alpha_scale, +alpha_scale).
+            # Prevents alpha from absorbing factor-level variance — beta and the
+            # encoder are forced to explain the cross-sectional variation instead.
+            alpha = self.alpha_scale * torch.tanh(self.alpha_head(H3).squeeze(-1))
+        else:
+            # Legacy: unconstrained linear head with hard clamp
+            alpha = torch.clamp(self.alpha_head(H3).squeeze(-1), min=-self.alpha_max, max=self.alpha_max)
         beta = self.beta_head(H3)  # (N, F)
         sigma = self.sigma_min + (self.sigma_max - self.sigma_min) * torch.sigmoid(self.sigma_head(H3)).squeeze(-1)  # (N,)
 
-        # Clamp outputs to prevent numerical issues
-        alpha = torch.clamp(alpha, min=-self.alpha_max, max=self.alpha_max)
         beta = torch.clamp(beta, min=-10.0, max=10.0)
 
         return alpha, beta, sigma

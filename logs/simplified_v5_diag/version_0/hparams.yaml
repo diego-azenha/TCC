@@ -1,0 +1,37 @@
+model_config: !!python/object:src.utils.config.ModelConfig
+  activation: gelu
+  alpha_max: 3.0
+  alpha_scale: 0.0
+  d_static: 11
+  d_ts: 76
+  dropout: 0.25
+  encoder_config: !!python/object:src.utils.config.EncoderConfig
+    phi_hidden: 64
+    rho_hidden: 128
+  hidden_size: 256
+  lookback: 256
+  nhead: 4
+  num_factors: 16
+  num_layers: 2
+  sigma_max: 3.0
+  sigma_min: 0.1
+training_config: !!python/object:src.utils.config.TrainingConfig
+  alpha_freeze_steps: 0
+  batch_size: 1
+  checkpoint_dir: checkpoints\simplified_v5_diag
+  device: cuda
+  free_bits_lambda: 0.1
+  kl_warmup_steps: 10000
+  lambda_sigma: 1.0
+  learning_rate: 0.0001
+  log_dir: logs
+  max_steps: 20000
+  normalize_returns: true
+  polyak_alpha: 0.999
+  polyak_start_step: 10000
+  returns_std: 0.04894174021901652
+  seed: 42
+  sigma_ref_ema: 0.99
+  use_polyak: true
+  val_every_n_steps: 100000
+  weight_decay: 1.0e-06

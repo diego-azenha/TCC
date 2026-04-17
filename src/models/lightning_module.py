@@ -71,6 +71,9 @@ class NeuralFactorsLightning(pl.LightningModule):
     def training_step(self, batch: tuple, batch_idx: int) -> torch.Tensor:
         S, S_static, r, mask = batch
 
+        _kl_warmup = getattr(self.training_config, 'kl_warmup_steps', 0)
+        kl_weight = min(1.0, self.global_step / _kl_warmup) if _kl_warmup > 0 else 1.0
+
         output = self.model.compute_elbo_loss(
             S=S,
             S_static=S_static,
@@ -79,6 +82,7 @@ class NeuralFactorsLightning(pl.LightningModule):
             free_bits_lambda=self.training_config.free_bits_lambda,
             lambda_sigma=getattr(self.training_config, 'lambda_sigma', 1.0),
             freeze_alpha=self._alpha_frozen,
+            kl_weight=kl_weight,
         )
 
         loss = output['loss']
@@ -121,8 +125,51 @@ class NeuralFactorsLightning(pl.LightningModule):
             # Beta-norm mean — for Image 1 panel 4 variance competition
             B_log = output['B']  # [batch, N, F]
             self.log('train/beta_norm_mean', B_log.norm(dim=-1).mean(), on_step=True, on_epoch=False)
+            self.log('train/kl_weight', kl_weight, on_step=True, on_epoch=False)
+
+        # Bootstrap diagnostics every 1000 steps (heavier computations)
+        if self.global_step % 1000 == 0:
+            with torch.no_grad():
+                alpha_d = output['alpha']   # [batch, N]
+                B_d = output['B']           # [batch, N, F]
+                mu_q_d = output['mu_q']     # [batch, F]
+                mask_f = mask.float() if mask is not None else torch.ones_like(r, dtype=torch.float)
+                n_valid = mask_f.sum().clamp(min=1.0)
+
+                # Metric 1: R²(α, r) — how much of return variance does α alone explain?
+                r_masked = r * mask_f
+                alpha_masked = alpha_d * mask_f
+                r_mean = r_masked.sum() / n_valid
+                ss_tot = ((r - r_mean) ** 2 * mask_f).sum().clamp(min=1e-9)
+                ss_res = ((r - alpha_d) ** 2 * mask_f).sum()
+                r2_alpha = 1.0 - ss_res / ss_tot
+                self.log('train/r2_alpha', r2_alpha, on_step=True, on_epoch=False)
+
+                # Metric 2: signal magnitude comparison — std(β·μ_q) vs std(α)
+                beta_mu = torch.einsum('bnf,bf->bn', B_d, mu_q_d)  # [batch, N]
+                beta_mu_std = (beta_mu * mask_f).std()
+                alpha_std_d = (alpha_d * mask_f).std().clamp(min=1e-9)
+                signal_ratio = beta_mu_std / alpha_std_d
+                self.log('train/beta_mu_std', beta_mu_std, on_step=True, on_epoch=False)
+                self.log('train/signal_ratio', signal_ratio, on_step=True, on_epoch=False)
 
         return loss
+
+    # ── Gradient norm diagnostics ─────────────────────────────────────────────
+
+    def on_before_optimizer_step(self, optimizer):
+        """Log gradient norms for alpha_head and beta_head every 100 steps."""
+        if self.global_step % 100 != 0:
+            return
+        a_grad = self.model.embedder.alpha_head.weight.grad
+        b_grad = self.model.embedder.beta_head.weight.grad
+        if a_grad is not None and b_grad is not None:
+            a_norm = a_grad.norm().item()
+            b_norm = b_grad.norm().item()
+            self.log('train/grad_norm_alpha', a_norm, on_step=True, on_epoch=False)
+            self.log('train/grad_norm_beta', b_norm, on_step=True, on_epoch=False)
+            ratio = b_norm / max(a_norm, 1e-9)
+            self.log('train/grad_norm_ratio_beta_alpha', ratio, on_step=True, on_epoch=False)
 
     # ── Validation ────────────────────────────────────────────────────────────
 

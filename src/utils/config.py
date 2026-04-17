@@ -45,7 +45,10 @@ class ModelConfig:
     # Output parameter constraints
     sigma_min: float = 0.1    # σ lower bound (normalised space)
     sigma_max: float = 3.0    # σ upper bound (normalised space)
-    alpha_max: float = 3.0    # α clamp bound (normalised space)
+    alpha_max: float = 3.0    # α clamp bound (normalised space); ignored when alpha_scale is set
+    # α amplitude cap: when > 0, forward uses alpha_scale * tanh(alpha_head(H3))
+    # preventing α from absorbing factor-level variance. 0.0 = disabled (legacy hard clamp).
+    alpha_scale: float = 0.0  # 0 = disabled; 0.1 = soft cap ≈ ±0.1 normalised units
 
     # Sub-configuration (initialised in __post_init__)
     encoder_config: 'EncoderConfig' = None
@@ -73,6 +76,8 @@ class ModelConfig:
             raise ValueError(f"sigma_max must be > sigma_min")
         if self.alpha_max <= 0:
             raise ValueError(f"alpha_max must be positive, got {self.alpha_max}")
+        if self.alpha_scale < 0:
+            raise ValueError(f"alpha_scale must be >= 0, got {self.alpha_scale}")
         if self.encoder_config is None:
             self.encoder_config = EncoderConfig()
 
@@ -106,6 +111,9 @@ class TrainingConfig:
 
     # Alpha freeze: freeze alpha_head for first N steps so factors develop first
     alpha_freeze_steps: int = None  # Auto: max_steps // 2; 0 disables
+
+    # KL annealing: ramp kl_weight from 0→1 over first N steps
+    kl_warmup_steps: int = 0  # 0 = disabled; e.g. 20000 for 20k warm-up
 
     # Paths
     checkpoint_dir: str = "checkpoints"
@@ -144,6 +152,8 @@ class TrainingConfig:
             self.alpha_freeze_steps = self.max_steps // 2
         if self.alpha_freeze_steps < 0:
             raise ValueError(f"alpha_freeze_steps must be >= 0, got {self.alpha_freeze_steps}")
+        if self.kl_warmup_steps < 0:
+            raise ValueError(f"kl_warmup_steps must be >= 0, got {self.kl_warmup_steps}")
 
 
 def get_default_config(d_ts: int, d_static: int) -> tuple:

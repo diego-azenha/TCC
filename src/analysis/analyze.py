@@ -40,7 +40,7 @@ def parse_args():
 
 
 
-def plot_loss_curves(log_dir, output_dir):
+def plot_loss_curves(log_dir, output_dir, kl_warmup_steps=0):
     """Plot training curves from TensorBoard logs."""
     print("Plotting loss curves...")
     output_dir = Path(output_dir)
@@ -179,7 +179,100 @@ def plot_loss_curves(log_dir, output_dir):
         plt.close()
         
         print(f"Saved training curves to: {output_path}")
-        
+
+        # ── Loss decomposition panel (2×2) ────────────────────────────────────
+        _ld_tags = [
+            ('train/L_recon_step',      'L_recon',            '#1f77b4'),
+            ('train/L_sigma_step',      'L_sigma',            '#ff7f0e'),
+            ('train/kl_divergence_step','KL divergence',      '#2ca02c'),
+            ('train/free_bits_penalty', 'Free bits penalty',  '#d62728'),
+            ('train/loss_step',         'Total loss',         '#9467bd'),
+            ('train/kl_weight',         'kl_weight',          '#ff7f0e'),
+        ]
+        _ld_data = {}
+        for tag, lbl, col in _ld_tags:
+            if tag in scalar_tags:
+                evts = ea.Scalars(tag)
+                _ld_data[tag] = {
+                    'steps': [e.step for e in evts],
+                    'vals':  [e.value for e in evts],
+                    'label': lbl,
+                    'color': col,
+                }
+
+        _have_ld = any(t in _ld_data for t in [
+            'train/L_recon_step', 'train/kl_divergence_step',
+            'train/free_bits_penalty', 'train/loss_step',
+        ])
+        if _have_ld:
+            def _ld_plot(ax, tag, smoothing=True):
+                if tag not in _ld_data:
+                    ax.text(0.5, 0.5, f'{tag}\nnot logged', transform=ax.transAxes,
+                            ha='center', va='center', fontsize=9, color='grey')
+                    return
+                d = _ld_data[tag]
+                arr = np.array(d['vals'], dtype=float)
+                steps = np.array(d['steps'])
+                y_lo = np.nanpercentile(arr, 5)
+                y_hi = np.nanpercentile(arr, 95)
+                arr_w = np.clip(arr, y_lo, y_hi)
+                margin = max(abs(y_hi - y_lo) * 0.05, 1e-9)
+                ax.plot(steps, arr_w, alpha=0.2, color=d['color'], linewidth=0.6)
+                if smoothing:
+                    w = min(100, max(1, len(arr_w) // 10))
+                    sm = pd.Series(arr_w).rolling(w, center=True).mean()
+                    ax.plot(steps, sm, color=d['color'], linewidth=2, label=d['label'])
+                else:
+                    ax.plot(steps, arr_w, color=d['color'], linewidth=1.5, label=d['label'])
+                ax.set_ylim(y_lo - margin, y_hi + margin)
+                if kl_warmup_steps > 0:
+                    ax.axvline(kl_warmup_steps, color='grey', linestyle='--',
+                               linewidth=1.0, alpha=0.7, label=f'warmup end ({kl_warmup_steps:,})')
+
+            fig2, axes2 = plt.subplots(2, 2, figsize=(15, 10))
+            fig2.suptitle('Loss Decomposition', fontsize=16, fontweight='bold')
+
+            # [0,0] L_recon + L_sigma on same axes
+            ax00 = axes2[0, 0]
+            _ld_plot(ax00, 'train/L_recon_step')
+            _ld_plot(ax00, 'train/L_sigma_step')
+            ax00.set_title('Reconstruction components\n(L_recon = ELBO recon; L_sigma = σ calibration)', fontsize=11)
+            ax00.set_xlabel('Step'); ax00.legend(fontsize=9); ax00.grid(True, alpha=0.3)
+
+            # [0,1] KL divergence
+            ax01 = axes2[0, 1]
+            _ld_plot(ax01, 'train/kl_divergence_step')
+            ax01.set_title('KL divergence\n(rises from ~0 during warmup, stabilises after)', fontsize=11)
+            ax01.set_xlabel('Step'); ax01.legend(fontsize=9); ax01.grid(True, alpha=0.3)
+
+            # [1,0] free bits penalty
+            ax10 = axes2[1, 0]
+            _ld_plot(ax10, 'train/free_bits_penalty')
+            ax10.set_title('Free bits penalty\n(→ 0 when all factors are active)', fontsize=11)
+            ax10.set_xlabel('Step'); ax10.legend(fontsize=9); ax10.grid(True, alpha=0.3)
+
+            # [1,1] total loss (left y) + kl_weight ramp (right y, twin axis)
+            ax11 = axes2[1, 1]
+            _ld_plot(ax11, 'train/loss_step')
+            ax11.set_title('Total loss + KL weight ramp', fontsize=11)
+            ax11.set_xlabel('Step'); ax11.legend(loc='upper right', fontsize=9); ax11.grid(True, alpha=0.3)
+            if 'train/kl_weight' in _ld_data:
+                ax11b = ax11.twinx()
+                d_kw = _ld_data['train/kl_weight']
+                ax11b.plot(d_kw['steps'], d_kw['vals'],
+                           color='#ff7f0e', linestyle='--', linewidth=1.5,
+                           alpha=0.85, label='kl_weight')
+                ax11b.set_ylim(-0.05, 1.15)
+                ax11b.set_ylabel('kl_weight', fontsize=9, color='#ff7f0e')
+                ax11b.tick_params(axis='y', labelcolor='#ff7f0e')
+                ax11b.legend(loc='center right', fontsize=9)
+
+            fig2.tight_layout()
+            ld_path = output_dir / 'loss_decomposition.png'
+            fig2.savefig(ld_path, dpi=300, bbox_inches='tight')
+            plt.close(fig2)
+            print(f"Saved loss decomposition to: {ld_path}")
+
     except ImportError:
         print("Warning: tensorboard package not available. Install with: pip install tensorboard")
     except Exception as e:
@@ -235,6 +328,128 @@ def analyze_factor_exposures(model, dataloader, output_dir, num_batches=50):
     print(f"Sigma (Scale): mean={all_sigma.mean():.4f}, std={all_sigma.std():.4f}")
 
 
+def plot_bootstrap_diagnostics(log_dir, output_dir):
+    """Plot bootstrap diagnostic metrics: R²(α,r), signal ratio, grad norm ratio.
+
+    These three metrics disambiguate why β gradient is weak:
+      - r2_alpha > 0.10  → α is absorbing factor-level variance (Hypothesis A/B)
+      - signal_ratio < 0.10 → β·μ_q signal is dominated by α (confirms intervention)
+      - grad_norm_ratio < 0.01 → encoder gradient starvation (may need IWAE k)
+    """
+    print("Plotting bootstrap diagnostics...")
+    output_dir = Path(output_dir)
+
+    try:
+        from tensorboard.backend.event_processing import event_accumulator
+        from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
+    except ImportError:
+        print("  tensorboard not available; skipping bootstrap diagnostics")
+        return
+
+    log_dir = Path(log_dir)
+    if not log_dir.exists():
+        print(f"  Log dir {log_dir} not found; skipping bootstrap diagnostics")
+        return
+
+    versions = sorted(log_dir.glob("version_*"), key=lambda p: int(p.name.split("_")[1]))
+    if not versions:
+        print(f"  No version subdirs found in {log_dir}; skipping")
+        return
+
+    print(f"  Reading TensorBoard logs from: {versions[-1]}")
+    ea = EventAccumulator(str(versions[-1]))
+    ea.Reload()
+    available = set(ea.Tags().get('scalars', []))
+
+    diag_tags = {
+        'train/r2_alpha':                    ('R²(α, r)',           '#e74c3c', 'want < 0.10'),
+        'train/signal_ratio':                ('std(β·μ_q) / std(α)', '#2ecc71', 'want > 0.10'),
+        'train/beta_mu_std':                 ('std(β·μ_q)',          '#3498db', ''),
+        'train/alpha_std':                   ('std(α)',              '#e67e22', ''),
+        'train/grad_norm_ratio_beta_alpha':  ('||∇β|| / ||∇α||',    '#9b59b6', 'want > 0.01'),
+    }
+
+    def _load(tag):
+        if tag not in available:
+            return None, None
+        evts = ea.Scalars(tag)
+        return np.array([e.step for e in evts]), np.array([e.value for e in evts])
+
+    def _smooth(arr, w=50):
+        if len(arr) < w:
+            return arr
+        return pd.Series(arr).rolling(w, center=True, min_periods=1).mean().values
+
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    fig.suptitle('Bootstrap Diagnostics\n(VAE β-gradient health vs α dominance)', fontsize=14, fontweight='bold')
+
+    # Panel [0,0]: R²(α, r)
+    ax = axes[0, 0]
+    steps, vals = _load('train/r2_alpha')
+    if steps is not None:
+        arr_w = np.clip(vals, np.nanpercentile(vals, 5), np.nanpercentile(vals, 95))
+        ax.plot(steps, arr_w, alpha=0.2, color='#e74c3c', linewidth=0.6)
+        ax.plot(steps, _smooth(arr_w), color='#e74c3c', linewidth=2, label='R²(α, r)')
+        ax.axhline(0.10, color='grey', linestyle='--', linewidth=1.0, alpha=0.7, label='threshold = 0.10')
+    else:
+        ax.text(0.5, 0.5, 'train/r2_alpha\nnot logged', transform=ax.transAxes,
+                ha='center', va='center', fontsize=9, color='grey')
+    ax.set_title('R²(α, r) — α share of return variance\n(> 0.10 = α absorbing factor variance)', fontsize=10)
+    ax.set_xlabel('Step'); ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
+
+    # Panel [0,1]: signal ratio
+    ax = axes[0, 1]
+    steps, vals = _load('train/signal_ratio')
+    if steps is not None:
+        arr_w = np.clip(vals, np.nanpercentile(vals, 5), np.nanpercentile(vals, 95))
+        ax.plot(steps, arr_w, alpha=0.2, color='#2ecc71', linewidth=0.6)
+        ax.plot(steps, _smooth(arr_w), color='#2ecc71', linewidth=2, label='std(β·μ_q) / std(α)')
+        ax.axhline(0.10, color='grey', linestyle='--', linewidth=1.0, alpha=0.7, label='threshold = 0.10')
+    else:
+        ax.text(0.5, 0.5, 'train/signal_ratio\nnot logged', transform=ax.transAxes,
+                ha='center', va='center', fontsize=9, color='grey')
+    ax.set_title('Signal ratio std(β·μ_q) / std(α)\n(< 0.10 = β·z signal drowned by α)', fontsize=10)
+    ax.set_xlabel('Step'); ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
+
+    # Panel [1,0]: β·μ_q std vs α std (magnitude comparison)
+    ax = axes[1, 0]
+    steps_b, vals_b = _load('train/beta_mu_std')
+    steps_a, vals_a = _load('train/alpha_std')
+    if steps_b is not None:
+        arr_b = np.clip(vals_b, np.nanpercentile(vals_b, 5), np.nanpercentile(vals_b, 95))
+        ax.plot(steps_b, arr_b, alpha=0.2, color='#3498db', linewidth=0.6)
+        ax.plot(steps_b, _smooth(arr_b), color='#3498db', linewidth=2, label='std(β·μ_q)')
+    if steps_a is not None:
+        arr_a = np.clip(vals_a, np.nanpercentile(vals_a, 5), np.nanpercentile(vals_a, 95))
+        ax.plot(steps_a, arr_a, alpha=0.2, color='#e67e22', linewidth=0.6)
+        ax.plot(steps_a, _smooth(arr_a), color='#e67e22', linewidth=2, label='std(α)')
+    if steps_b is None and steps_a is None:
+        ax.text(0.5, 0.5, 'beta_mu_std / alpha_std\nnot logged', transform=ax.transAxes,
+                ha='center', va='center', fontsize=9, color='grey')
+    ax.set_title('Magnitude comparison\n(β·μ_q should eventually compete with α)', fontsize=10)
+    ax.set_xlabel('Step'); ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
+
+    # Panel [1,1]: gradient norm ratio ||∇β|| / ||∇α||
+    ax = axes[1, 1]
+    steps, vals = _load('train/grad_norm_ratio_beta_alpha')
+    if steps is not None:
+        arr_w = np.clip(vals, np.nanpercentile(vals, 5), np.nanpercentile(vals, 95))
+        ax.plot(steps, arr_w, alpha=0.2, color='#9b59b6', linewidth=0.6)
+        ax.plot(steps, _smooth(arr_w), color='#9b59b6', linewidth=2, label='||∇β|| / ||∇α||')
+        ax.axhline(0.01, color='grey', linestyle='--', linewidth=1.0, alpha=0.7, label='threshold = 0.01')
+    else:
+        ax.text(0.5, 0.5, 'grad_norm_ratio_beta_alpha\nnot logged', transform=ax.transAxes,
+                ha='center', va='center', fontsize=9, color='grey')
+    ax.set_title('Gradient norm ratio ||∇β|| / ||∇α||\n(< 0.01 = β gradient starvation)', fontsize=10)
+    ax.set_xlabel('Step'); ax.legend(fontsize=9); ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    out_path = output_dir / 'bootstrap_diagnostics.png'
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"  Saved bootstrap diagnostics to: {out_path}")
+
+
 
 
 
@@ -269,7 +484,11 @@ def main():
 
     # Plot training curves from TensorBoard logs
     log_dir = f"logs/{experiment_name}"
-    plot_loss_curves(log_dir, output_dir)
+    _kl_warmup_steps = 0
+    if config_json.exists():
+        _kl_warmup_steps = _cfg.get('training', {}).get('kl_warmup_steps', 0)
+    plot_loss_curves(log_dir, output_dir, kl_warmup_steps=_kl_warmup_steps)
+    plot_bootstrap_diagnostics(log_dir, output_dir)
     
     # Run analyses
     analyze_factor_exposures(model, dataloader, output_dir)

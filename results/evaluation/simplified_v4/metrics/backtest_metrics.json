@@ -1,0 +1,23 @@
+{
+  "total_return": -0.05150543399862295,
+  "annualized_return": -0.01639703745626986,
+  "annualized_vol": 0.1720850265402639,
+  "sharpe_ratio": -0.09528451013972057,
+  "sortino_ratio": -0.09403680815450943,
+  "calmar_ratio": -0.05323437481674907,
+  "max_drawdown": -0.3080159673653362,
+  "avg_turnover": 0.03801481058828789,
+  "annualized_turnover": 9.579732268248547,
+  "avg_max_weight": 0.003550869773965698,
+  "avg_effective_n": 282.4488947597827,
+  "transaction_cost_bps": 10,
+  "total_return_net": -0.08010147232774434,
+  "annualized_return_net": -0.025766402267787925,
+  "sharpe_ratio_net": -0.14972042329974145,
+  "benchmark_total_return": 0.6909397437505518,
+  "benchmark_annualized_return": 0.1804306098487516,
+  "benchmark_sharpe": 1.160672572541832,
+  "benchmark_max_drawdown": -0.14302721613804734,
+  "excess_return": -0.16847838017071526,
+  "information_ratio": -1.9328698050834692
+}

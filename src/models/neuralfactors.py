@@ -101,6 +101,7 @@ class NeuralFactors(nn.Module):
         free_bits_lambda: float = 0.0,
         lambda_sigma: float = 1.0,
         freeze_alpha: bool = False,
+        kl_weight: float = 1.0,
     ) -> Dict[str, torch.Tensor]:
         """Compute decomposed loss with detached sigma gradient.
 
@@ -181,7 +182,7 @@ class NeuralFactors(nn.Module):
             ).sum(dim=-1).mean()
 
         # ── Total loss ────────────────────────────────────────────────────────
-        loss = -L_recon + kl.mean() + lambda_sigma * L_sigma + free_bits_penalty
+        loss = -L_recon + kl_weight * kl.mean() + lambda_sigma * L_sigma + kl_weight * free_bits_penalty
 
         # ── Update sigma_ref (EMA of batch residual RMS, no gradient) ────────
         if self.training:

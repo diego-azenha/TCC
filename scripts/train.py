@@ -23,7 +23,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from src.utils.config import ModelConfig, TrainingConfig, get_default_config
 from src.utils.dataset import NeuralFactorsDataset, collate_fn
-from src.utils.data_utils import discover_feature_dims, compute_returns_std_from_train
+from src.utils.data_utils import discover_feature_dims, compute_returns_std_from_train, load_normalization_stats
 from src.models.lightning_module import NeuralFactorsLightning
 
 
@@ -65,6 +65,7 @@ def parse_args():
     parser.add_argument("--sigma_min", type=float, default=0.1, help="Sigma lower bound via sigmoid (normalised space)")
     parser.add_argument("--sigma_max", type=float, default=3.0, help="Sigma upper bound via sigmoid (normalised space)")
     parser.add_argument("--alpha_max", type=float, default=3.0, help="Alpha clamp bound in normalised space")
+    parser.add_argument("--alpha_scale", type=float, default=0.0, help="If > 0, use alpha_scale * tanh(alpha_head) instead of hard clamp; e.g. 0.1")
     
     # Training hyperparameters
     parser.add_argument("--learning_rate", type=float, default=1e-4, help="Learning rate")
@@ -77,6 +78,7 @@ def parse_args():
     parser.add_argument("--lambda_sigma", type=float, default=1.0, help="Weight on L_sigma calibration loss (detached sigma)")
     parser.add_argument("--sigma_ref_ema", type=float, default=0.99, help="EMA momentum for sigma_ref buffer")
     parser.add_argument("--alpha_freeze_steps", type=int, default=None, help="Freeze alpha_head for N steps (default: max_steps // 2; 0 = disabled)")
+    parser.add_argument("--kl_warmup_steps", type=int, default=0, help="KL annealing warm-up: ramp kl_weight 0→1 over N steps (0 = disabled)")
     
     # Data split dates (adjusted for IBX data 2005-2025)
     parser.add_argument("--train_end", type=str, default="2018-12-31", help="Training end date")
@@ -86,7 +88,17 @@ def parse_args():
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints", help="Checkpoint directory")
     parser.add_argument("--log_dir", type=str, default="logs", help="TensorBoard log directory")
     parser.add_argument("--experiment_name", type=str, default="neuralfactors", help="Experiment name")
-    
+
+    # Normalisation stats — when present, returns_std is read from here instead of recomputed.
+    # This ensures the target r is normalised by the same constant used to build x_ts.
+    parser.add_argument(
+        "--norm_stats_file",
+        type=str,
+        default="parquets/normalization_stats.json",
+        help="normalization_stats.json relative to data_dir. "
+             "returns_std is taken from this file when available.",
+    )
+
     # Device and reproducibility
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--gpus", type=int, default=1, help="Number of GPUs")
@@ -124,21 +136,25 @@ def main():
     print("NeuralFactors Training")
     print("="*80)
     
+    # Load normalization stats and read returns_std from there (same constant used to build x_ts)
+    norm_stats_path = data_dir / args.norm_stats_file
+    norm_stats = None
+    if norm_stats_path.exists():
+        print(f"\nLoading normalization stats from {norm_stats_path}...")
+        norm_stats = load_normalization_stats(str(norm_stats_path))
+        returns_std = norm_stats["returns_std"]
+        print(f"Returns std (from normalization_stats.json): {returns_std:.6f}")
+    else:
+        print(f"\nWARNING: {norm_stats_path} not found — recomputing returns_std from prices.")
+        df_prices_for_std = pd.read_parquet(str(prices_path), engine='pyarrow')
+        df_prices_for_std['date'] = pd.to_datetime(df_prices_for_std['date'])
+        returns_std = compute_returns_std_from_train(df_prices_for_std, train_end=args.train_end)
+        print(f"Returns std (recomputed): {returns_std:.6f}")
+
     # Discover feature dimensions
     print("\nDiscovering feature dimensions...")
     d_ts, d_static = discover_feature_dims(str(x_ts_path), str(x_static_path))
     print(f"Feature dimensions: d_ts={d_ts}, d_static={d_static}")
-    
-    # Compute returns std from training data
-    print("\nComputing returns normalization std from training data...")
-    df_prices_for_std = pd.read_parquet(str(prices_path), engine='pyarrow')
-    df_prices_for_std['date'] = pd.to_datetime(df_prices_for_std['date'])
-    
-    returns_std = compute_returns_std_from_train(
-        df_prices_for_std,
-        train_end=args.train_end
-    )
-    print(f"Returns std: {returns_std:.6f}")
     
     # Create model configuration
     print("\nCreating model configuration...")
@@ -152,6 +168,7 @@ def main():
         sigma_min=args.sigma_min,
         sigma_max=args.sigma_max,
         alpha_max=args.alpha_max,
+        alpha_scale=args.alpha_scale,
     )
     
     # Create training configuration
@@ -166,6 +183,7 @@ def main():
         lambda_sigma=args.lambda_sigma,
         sigma_ref_ema=args.sigma_ref_ema,
         alpha_freeze_steps=args.alpha_freeze_steps,
+        kl_warmup_steps=args.kl_warmup_steps,
         checkpoint_dir=str(checkpoint_dir),
         log_dir=args.log_dir,
         seed=args.seed,
@@ -196,7 +214,7 @@ def main():
         split='train',
         lookback=args.lookback,
         normalize=True,
-        returns_std=None,  # Compute from data
+        returns_std=returns_std,  # From normalization_stats.json (same constant used to build x_ts)
         train_end=args.train_end,
         val_end=args.val_end,
     )
@@ -209,7 +227,7 @@ def main():
         split='val',
         lookback=args.lookback,
         normalize=True,
-        returns_std=train_dataset.returns_std,  # Use training std
+        returns_std=returns_std,  # Same constant
         train_end=args.train_end,
         val_end=args.val_end,
     )
