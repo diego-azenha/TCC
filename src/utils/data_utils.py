@@ -18,16 +18,25 @@ from typing import Tuple, Optional, Dict
 import torch
 
 
-def discover_feature_dims(x_ts_path: str, x_static_path: str) -> Tuple[int, int]:
+def discover_feature_dims(x_ts_path, x_static_path: str) -> Tuple[int, int]:
     """Discover feature dimensions from parquet files.
     
     Args:
-        x_ts_path: Path to time-series features parquet
+        x_ts_path: Path (or list of paths) to time-series features parquet(s)
         x_static_path: Path to static features parquet (no date column)
         
     Returns:
         Tuple of (d_ts, d_static) - feature dimensions
     """
+    if isinstance(x_ts_path, (list, tuple)):
+        all_cols: list = []
+        for p in x_ts_path:
+            df_part = pd.read_parquet(p, engine='pyarrow')
+            all_cols += [c for c in df_part.columns if c not in ['date', 'ticker'] and c not in all_cols]
+        d_ts = len(all_cols)
+        df_static = pd.read_parquet(x_static_path, engine='pyarrow')
+        d_static = len([col for col in df_static.columns if col not in ['ticker']])
+        return d_ts, d_static
     df_ts = pd.read_parquet(x_ts_path, engine='pyarrow')
     df_static = pd.read_parquet(x_static_path, engine='pyarrow')
     
@@ -53,21 +62,28 @@ def load_normalization_stats(stats_path: str) -> dict:
 
 
 def load_parquets(
-    x_ts_path: str,
+    x_ts_path,
     x_static_path: str,
     prices_path: Optional[str] = None
 ) -> Tuple[pd.DataFrame, pd.DataFrame, Optional[pd.DataFrame]]:
     """Load parquet files and ensure proper datetime indexing.
     
     Args:
-        x_ts_path: Path to time-series features parquet (long: date, ticker, features)
+        x_ts_path: Path (or list of paths) to time-series features parquet(s)
         x_static_path: Path to static features parquet (ticker, one-hot sectors — no date)
         prices_path: Optional path to prices parquet (long: date, ticker, close)
         
     Returns:
         Tuple of (df_ts, df_static, df_prices)
     """
-    df_ts = pd.read_parquet(x_ts_path, engine='pyarrow')
+    if isinstance(x_ts_path, (list, tuple)):
+        parts = [pd.read_parquet(p, engine='pyarrow') for p in x_ts_path]
+        df_ts = parts[0]
+        for part in parts[1:]:
+            new_cols = [c for c in part.columns if c not in df_ts.columns]
+            df_ts = df_ts.merge(part[['date', 'ticker'] + new_cols], on=['date', 'ticker'], how='inner')
+    else:
+        df_ts = pd.read_parquet(x_ts_path, engine='pyarrow')
     df_static = pd.read_parquet(x_static_path, engine='pyarrow')
     
     # Ensure date column is datetime (x_ts has date; x_static does NOT)

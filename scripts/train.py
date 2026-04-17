@@ -39,10 +39,11 @@ def parse_args():
         help="Directory containing parquet files"
     )
     parser.add_argument(
-        "--x_ts_file",
+        "--x_ts_files",
         type=str,
-        default="parquets/x_ts.parquet",
-        help="Time-series features parquet file (relative to data_dir)"
+        nargs="+",
+        default=["parquets/x_ts.parquet"],
+        help="One or more x_ts parquet files (relative to data_dir)"
     )
     parser.add_argument(
         "--x_static_file",
@@ -125,7 +126,8 @@ def main():
     
     # Setup paths
     data_dir = Path(args.data_dir)
-    x_ts_path = data_dir / args.x_ts_file
+    x_ts_paths = [data_dir / f for f in args.x_ts_files]
+    x_ts_path = x_ts_paths[0] if len(x_ts_paths) == 1 else x_ts_paths
     x_static_path = data_dir / args.x_static_file
     prices_path = data_dir / args.prices_file
     
@@ -153,7 +155,10 @@ def main():
 
     # Discover feature dimensions
     print("\nDiscovering feature dimensions...")
-    d_ts, d_static = discover_feature_dims(str(x_ts_path), str(x_static_path))
+    d_ts, d_static = discover_feature_dims(
+        [str(p) for p in x_ts_paths] if len(x_ts_paths) > 1 else str(x_ts_path),
+        str(x_static_path)
+    )
     print(f"Feature dimensions: d_ts={d_ts}, d_static={d_static}")
     
     # Create model configuration
@@ -208,7 +213,7 @@ def main():
     
     print("\nTraining dataset:")
     train_dataset = NeuralFactorsDataset(
-        x_ts_path=str(x_ts_path),
+        x_ts_path=[str(p) for p in x_ts_paths] if len(x_ts_paths) > 1 else str(x_ts_path),
         x_static_path=str(x_static_path),
         prices_path=str(prices_path),
         split='train',
@@ -221,7 +226,7 @@ def main():
     
     print("\nValidation dataset:")
     val_dataset = NeuralFactorsDataset(
-        x_ts_path=str(x_ts_path),
+        x_ts_path=[str(p) for p in x_ts_paths] if len(x_ts_paths) > 1 else str(x_ts_path),
         x_static_path=str(x_static_path),
         prices_path=str(prices_path),
         split='val',

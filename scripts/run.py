@@ -40,6 +40,9 @@ def parse_args():
                    help="Name used for checkpoint and results subdirectories")
     p.add_argument("--data_dir", type=str, default="data",
                    help="Directory containing parquet files")
+    p.add_argument("--x_ts_files", type=str, nargs="+",
+                   default=["parquets/x_ts.parquet"],
+                   help="One or more x_ts parquet files (relative to data_dir)")
     p.add_argument("--checkpoint_dir", type=str, default="checkpoints",
                    help="Root checkpoint directory")
     p.add_argument("--log_dir", type=str, default="logs",
@@ -164,6 +167,8 @@ def run_training(args, python: str) -> Path:
         "--val_end", args.val_end,
         "--gpus", str(args.gpus),
     ]
+    for f in args.x_ts_files:
+        cmd += ["--x_ts_files", f]
     if args.polyak_start_step is not None:
         cmd += ["--polyak_start_step", str(args.polyak_start_step)]
     if args.alpha_freeze_steps is not None:
